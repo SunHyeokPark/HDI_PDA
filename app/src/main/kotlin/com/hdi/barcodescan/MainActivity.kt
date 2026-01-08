@@ -34,7 +34,7 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
         
         // HTTP 사이트 로드 - 여기에 실제 URL 입력
-        webView.loadUrl("http://erp.hdi21.co.kr/mobile")
+        webView.loadUrl("http://erp.hdi21.co.kr/mobile/BarcodeIn_scan_camera_ver.asp")
     }
 
     private fun setupWebView() {
@@ -55,7 +55,6 @@ class MainActivity : AppCompatActivity() {
 
             // 캐시 설정
             cacheMode = WebSettings.LOAD_DEFAULT
-            setAppCacheEnabled(true)
         }
 
         // WebChromeClient - 카메라 권한 처리
