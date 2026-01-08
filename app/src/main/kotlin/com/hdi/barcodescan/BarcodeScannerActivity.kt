@@ -128,10 +128,12 @@ class BarcodeScannerActivity : AppCompatActivity() {
             resultIntent.putExtra(RESULT_BARCODE, cleanBarcode)
             setResult(RESULT_OK, resultIntent)
             
-            // 약간 지연 후 종료
+            Log.d(TAG, "Barcode scan complete: $cleanBarcode")
+            
+            // 약간 지연 후 종료 (사용자가 성공 메시지 볼 수 있도록)
             previewView.postDelayed({
                 finish()
-            }, 500)
+            }, 800)
         }
     }
 
