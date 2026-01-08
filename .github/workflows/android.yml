@@ -22,11 +22,11 @@ jobs:
         distribution: 'temurin'
         cache: gradle
     
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+    - name: Setup Gradle
+      uses: gradle/gradle-build-action@v2
     
     - name: Build Debug APK
-      run: ./gradlew assembleDebug --stacktrace
+      run: gradle assembleDebug --stacktrace
     
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
@@ -35,8 +35,8 @@ jobs:
         path: app/build/outputs/apk/debug/app-debug.apk
         retention-days: 30
     
-    - name: Build Release APK (unsigned)
-      run: ./gradlew assembleRelease --stacktrace
+    - name: Build Release APK
+      run: gradle assembleRelease --stacktrace
       continue-on-error: true
     
     - name: Upload Release APK
@@ -46,60 +46,3 @@ jobs:
         name: hdi-barcode-scanner-release
         path: app/build/outputs/apk/release/app-release-unsigned.apk
         retention-days: 30
-```
-
-#### Step 3: 커밋
-```
-Commit message: Fix deprecated upload-artifact v3
-```
-
-"Commit changes" 클릭
-
----
-
-## 🔄 자동으로 다시 빌드됨!
-
-파일을 수정하고 커밋하면 **자동으로 빌드가 다시 시작**됩니다.
-```
-🟡 Fix deprecated upload-artifact v3
-   Android CI
-   Running · 30s
-```
-
----
-
-## ✅ 성공 확인
-
-5-10분 후:
-```
-✅ Fix deprecated upload-artifact v3
-   Android CI
-   Success · 8m 24s
-```
-
-이제 Artifacts에서 APK 다운로드 가능! 📦
-
----
-
-## 🎯 핵심 변경사항
-
-**변경된 부분:**
-- `actions/upload-artifact@v3` → `actions/upload-artifact@v4`
-
-**이유:**
-- GitHub가 2024년 4월에 v3 지원 중단
-- 모든 프로젝트는 v4로 업데이트 필요
-
-**다른 변경 없음:**
-- 동작 방식 동일
-- APK 다운로드 방법 동일
-
----
-
-## 💡 빠른 확인
-
-수정 후 Actions 탭에서:
-```
-✅ 모든 단계 성공
-✅ "Upload Debug APK" 단계 정상 실행
-✅ Artifacts 섹션에 APK 표시
