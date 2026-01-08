@@ -34,7 +34,7 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
         
         // HTTP 사이트 로드 - 여기에 실제 URL 입력
-        webView.loadUrl("http://erp.hdi21.co.kr/mobile/BarcodeIn_scan_camera_ver.asp")
+        webView.loadUrl("http://erp.hdi21.co.kr/mobile")
     }
 
     private fun setupWebView() {
