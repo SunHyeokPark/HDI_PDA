@@ -148,7 +148,7 @@ class MainActivity : AppCompatActivity() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 super.onProgressChanged(view, newProgress)
                 title = if (newProgress == 100) {
-                    "입고 스캐너"
+                    "HDI PDA"
                 } else {
                     "로딩중... $newProgress%"
                 }
@@ -223,7 +223,7 @@ class MainActivity : AppCompatActivity() {
                 if (allGranted) {
                     Toast.makeText(this, "권한이 허용되었습니다", Toast.LENGTH_SHORT).show()
                     setupWebView()
-                    webView.loadUrl("http://erp.hdi21.co.kr/mobile/BarcodeIn_scan_camera_ver.asp")
+                    webView.loadUrl("http://erp.hdi21.co.kr/mobile")
                 } else {
                     Toast.makeText(this, 
                         "카메라 권한이 필요합니다. 설정에서 권한을 허용해주세요.", 
