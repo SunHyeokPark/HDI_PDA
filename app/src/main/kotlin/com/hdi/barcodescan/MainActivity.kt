@@ -46,11 +46,22 @@ class MainActivity : AppCompatActivity() {
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             val barcode = result.data?.getStringExtra(BarcodeScannerActivity.RESULT_BARCODE)
-            if (barcode != null) {
-                Log.d(TAG, "Scanned barcode: $barcode")
-                // WebView에 바코드 전달
-                injectScannedBarcode(barcode)
+            if (barcode != null && barcode.isNotEmpty()) {
+                Log.d(TAG, "Scanned barcode received: $barcode")
+                
+                // WebView로 포커스 복귀
+                webView.requestFocus()
+                
+                // 약간의 지연 후 바코드 주입 (WebView가 준비될 시간)
+                webView.postDelayed({
+                    injectScannedBarcode(barcode)
+                }, 300)
+            } else {
+                Log.e(TAG, "Empty barcode received")
             }
+        } else {
+            Log.d(TAG, "Scanner cancelled or failed")
+            webView.requestFocus()
         }
     }
 
@@ -400,21 +411,45 @@ class MainActivity : AppCompatActivity() {
     
     // 스캔된 바코드를 WebView에 주입
     private fun injectScannedBarcode(barcode: String) {
+        Log.d(TAG, "Injecting barcode: $barcode")
+        
+        // 방법 1: input 필드에 직접 값 설정 후 keyup 이벤트 트리거
         val script = """
             (function() {
                 console.log('Injecting scanned barcode: $barcode');
                 
-                // doIpgoScan 함수 호출
-                if (typeof doIpgoScan === 'function') {
-                    doIpgoScan('$barcode');
+                // scan_bar 입력 필드 찾기
+                var scanInput = document.getElementById('scan_bar');
+                if (scanInput) {
+                    // 값 설정
+                    scanInput.value = '$barcode';
+                    console.log('Set scan_bar value to: $barcode');
+                    
+                    // keyup 이벤트 트리거 (웹페이지의 이벤트 핸들러 실행)
+                    var event = new Event('keyup', { bubbles: true });
+                    scanInput.dispatchEvent(event);
+                    console.log('Triggered keyup event');
+                    
+                    // 포커스 설정
+                    scanInput.focus();
                 } else {
-                    console.error('doIpgoScan function not found');
+                    console.error('scan_bar input not found');
+                    
+                    // 대안: doIpgoScan 직접 호출
+                    if (typeof doIpgoScan === 'function') {
+                        console.log('Calling doIpgoScan directly');
+                        doIpgoScan('$barcode');
+                    } else {
+                        console.error('doIpgoScan function not found');
+                    }
                 }
             })();
         """.trimIndent()
         
-        webView.evaluateJavascript(script) { result ->
-            Log.d(TAG, "Barcode injection result: $result")
+        webView.post {
+            webView.evaluateJavascript(script) { result ->
+                Log.d(TAG, "Barcode injection result: $result")
+            }
         }
     }
 }
