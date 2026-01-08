@@ -132,16 +132,8 @@ class MainActivity : AppCompatActivity() {
             // 카메라 권한 요청
             override fun onPermissionRequest(request: PermissionRequest?) {
                 runOnUiThread {
-                    if (hasCameraPermission()) {
-                        request?.grant(request.resources)
-                    } else {
-                        request?.deny()
-                        Toast.makeText(
-                            this@MainActivity,
-                            "카메라 권한이 필요합니다",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
+                    // 항상 권한 승인 (이미 시스템 권한을 받았으므로)
+                    request?.grant(request.resources)
                 }
             }
 
@@ -238,6 +230,14 @@ class MainActivity : AppCompatActivity() {
             webView.goBack()
         } else {
             super.onBackPressed()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 앱이 다시 활성화될 때 권한 재확인
+        if (!hasCameraPermission()) {
+            checkAndRequestPermissions()
         }
     }
 
