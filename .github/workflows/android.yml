@@ -29,21 +29,24 @@ jobs:
     - name: Build Debug APK
       run: gradle assembleDebug --stacktrace
     
+    - name: List APK files
+      run: |
+        echo "Looking for APK files..."
+        find . -name "*.apk" -type f
+        ls -la app/build/outputs/apk/debug/ || echo "Debug APK directory not found"
+    
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
       with:
-        name: hdi-barcode-scanner-debug
-        path: app/build/outputs/apk/debug/app-debug.apk
-        retention-days: 30
+        name: app-debug-apk
+        path: app/build/outputs/apk/debug/*.apk
+        if-no-files-found: error
     
-    - name: Build Release APK
-      run: gradle assembleRelease --stacktrace
-      continue-on-error: true
-    
-    - name: Upload Release APK
+    - name: Upload APK (alternative path)
+      if: failure()
       uses: actions/upload-artifact@v4
-      if: success()
       with:
-        name: hdi-barcode-scanner-release
-        path: app/build/outputs/apk/release/app-release-unsigned.apk
-        retention-days: 30
+        name: app-debug-apk-alt
+        path: |
+          **/*.apk
+        if-no-files-found: warn
