@@ -65,7 +65,7 @@ class MainActivity : AppCompatActivity() {
             checkAndRequestPermissions()
         } else {
             setupWebView()
-            webView.loadUrl("http://erp.hdi21.co.kr/mobile/BarcodeIn_scan_camera_ver.asp")
+            webView.loadUrl("http://erp.hdi21.co.kr/mobile")
         }
     }
 
