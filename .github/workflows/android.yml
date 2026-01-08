@@ -5,15 +5,15 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch:  # 수동 실행 가능하게
+  workflow_dispatch:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
+    
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
     
     - name: Set up JDK 17
       uses: actions/setup-java@v4
@@ -21,16 +21,78 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
         cache: gradle
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
-      
+    
+    - name: Setup Gradle
+      uses: gradle/gradle-build-action@v2
+    
     - name: Build Debug APK
-      run: ./gradlew assembleDebug
-      
+      run: gradle assembleDebug --stacktrace
+    
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
       with:
-        name: app-debug
+        name: hdi-barcode-scanner-debug
         path: app/build/outputs/apk/debug/app-debug.apk
         retention-days: 30
+    
+    - name: Build Release APK (unsigned)
+      run: gradle assembleRelease --stacktrace
+      continue-on-error: true
+    
+    - name: Upload Release APK
+      uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: hdi-barcode-scanner-release
+        path: app/build/outputs/apk/release/app-release-unsigned.apk
+        retention-days: 30
+```
+
+5. **"Commit changes" 클릭**
+
+**이렇게 하면 gradlew 없이도 빌드됩니다!** ✅
+
+---
+
+### 옵션 2: gradlew 파일 추가
+
+**GitHub에서 파일 추가:**
+
+1. **저장소 메인 페이지로 이동**
+2. **"Add file" → "Create new file"**
+3. **파일 이름:** `gradlew`
+4. **제공된 `gradlew` 파일 내용 붙여넣기**
+5. **"Commit new file" 클릭**
+
+---
+
+### 옵션 3: 전체 다시 업로드 (확실한 방법)
+
+1. **저장소의 모든 파일 삭제**
+2. **`kotlin_android_project.zip` 다시 압축 해제**
+3. **이번에는 확실하게:**
+```
+kotlin_android_project 폴더를 열고
+안의 내용을 확인:
+
+✓ app (폴더)
+✓ gradle (폴더)
+✓ .github (폴더)
+✓ build.gradle
+✓ settings.gradle
+✓ gradlew            ← 이 파일이 있는지 확인!
+✓ gradlew.bat
+✓ README.md
+
+이 파일들을 전부 선택해서 업로드
+```
+
+---
+
+## ✅ 확인 방법
+
+업로드 후 저장소 메인 페이지에서:
+```
+✅ gradlew 파일이 보이나요?
+✅ build.gradle 파일이 보이나요?
+✅ app/ 폴더가 보이나요?
