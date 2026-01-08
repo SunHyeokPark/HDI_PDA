@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
@@ -33,11 +34,26 @@ class MainActivity : AppCompatActivity() {
     private var cameraPhotoUri: Uri? = null
     
     companion object {
+        private const val TAG = "HDI_PDA"
         private const val CAMERA_PERMISSION_CODE = 100
         private const val ALL_PERMISSIONS_CODE = 101
+        private const val SCANNER_REQUEST_CODE = 200
     }
 
-    // 파일 선택 결과 처리
+    // 바코드 스캐너 Activity 런처
+    private val scannerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val barcode = result.data?.getStringExtra(BarcodeScannerActivity.RESULT_BARCODE)
+            if (barcode != null) {
+                Log.d(TAG, "Scanned barcode: $barcode")
+                // WebView에 바코드 전달
+                injectScannedBarcode(barcode)
+            }
+        }
+    }
+
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -61,7 +77,6 @@ class MainActivity : AppCompatActivity() {
 
         webView = findViewById(R.id.webview)
         
-        // 권한이 없으면 먼저 요청
         if (!hasCameraPermission()) {
             checkAndRequestPermissions()
         } else {
@@ -71,7 +86,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupWebView() {
-        // WebView 기본 설정
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -81,27 +95,27 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             javaScriptCanOpenWindowsAutomatically = true
             
-            // HTTP 컨텐츠 허용
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             }
 
-            // 캐시 설정
             cacheMode = WebSettings.LOAD_DEFAULT
         }
 
-        // JavaScript Bridge 추가 - 중요!
+        // 디버깅 활성화
+        WebView.setWebContentsDebuggingEnabled(true)
+
+        // JavaScript Bridge 추가
         webView.addJavascriptInterface(CameraInterface(), "AndroidCamera")
 
-        // WebChromeClient - 카메라 권한 및 파일 선택 처리
         webView.webChromeClient = object : WebChromeClient() {
             
-            // 파일 선택 (카메라 포함)
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>?,
                 fileChooserParams: FileChooserParams?
             ): Boolean {
+                Log.d(TAG, "onShowFileChooser called")
                 this@MainActivity.filePathCallback?.onReceiveValue(null)
                 this@MainActivity.filePathCallback = filePathCallback
 
@@ -133,11 +147,12 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
             
-            // 카메라 권한 요청 - 항상 승인
             override fun onPermissionRequest(request: PermissionRequest?) {
+                Log.d(TAG, "onPermissionRequest: ${request?.resources?.joinToString()}")
                 runOnUiThread {
-                    // 시스템 권한을 이미 받았으므로 WebView 권한도 자동 승인
+                    // 모든 권한 자동 승인
                     request?.grant(request.resources)
+                    Log.d(TAG, "Permissions granted: ${request?.resources?.joinToString()}")
                 }
             }
 
@@ -150,19 +165,19 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // 콘솔 로그를 Android 로그로 출력 (디버깅용)
             override fun onConsoleMessage(message: android.webkit.ConsoleMessage?): Boolean {
-                android.util.Log.d("WebView", "${message?.message()} -- From line ${message?.lineNumber()} of ${message?.sourceId()}")
+                Log.d(TAG, "WebView Console: ${message?.message()} -- Line ${message?.lineNumber()} of ${message?.sourceId()}")
                 return true
             }
         }
 
-        // WebViewClient - 에러 처리
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                // 페이지 로드 완료 후 getUserMedia polyfill 주입
-                injectGetUserMediaPolyfill()
+                Log.d(TAG, "Page finished loading: $url")
+                
+                // getUserMedia polyfill 주입
+                injectCameraPolyfill()
             }
 
             override fun onReceivedError(
@@ -171,6 +186,7 @@ class MainActivity : AppCompatActivity() {
                 description: String?,
                 failingUrl: String?
             ) {
+                Log.e(TAG, "WebView error: $description")
                 Toast.makeText(
                     this@MainActivity,
                     "오류: $description",
@@ -180,61 +196,92 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // getUserMedia를 네이티브로 대체하는 polyfill 주입
-    private fun injectGetUserMediaPolyfill() {
+    private fun injectCameraPolyfill() {
         val polyfill = """
             (function() {
-                // getUserMedia를 오버라이드하여 항상 성공한 것처럼 처리
-                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                    const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-                    
-                    navigator.mediaDevices.getUserMedia = function(constraints) {
-                        console.log('getUserMedia called with constraints:', constraints);
+                console.log('=== HDI PDA Camera Polyfill with Native Scanner ===');
+                
+                // 네이티브 스캐너 사용 가능 여부 체크
+                var hasNativeScanner = typeof AndroidCamera !== 'undefined' && 
+                                      typeof AndroidCamera.openScanner === 'function';
+                
+                console.log('Native scanner available:', hasNativeScanner);
+                
+                // startLiveScanner 함수 오버라이드 - 네이티브 스캐너 호출
+                if (typeof window.startLiveScanner === 'function') {
+                    window.originalStartLiveScanner = window.startLiveScanner;
+                    window.startLiveScanner = function() {
+                        console.log('startLiveScanner called - using native scanner');
                         
-                        // 카메라 요청인 경우
-                        if (constraints.video) {
-                            // 실제로는 input file을 사용하도록 유도
-                            console.log('Camera access requested - use file input instead');
+                        if (hasNativeScanner) {
+                            // 네이티브 스캐너 열기
+                            try {
+                                AndroidCamera.openScanner();
+                                console.log('Native scanner opened');
+                            } catch(e) {
+                                console.error('Failed to open native scanner:', e);
+                                alert('스캐너를 열 수 없습니다.');
+                            }
+                        } else {
+                            alert('네이티브 스캐너를 사용할 수 없습니다.\\n"카메라로 촬영" 버튼을 사용해주세요.');
                         }
-                        
-                        // 원본 함수 호출 (실패할 수 있지만 일단 시도)
-                        return originalGetUserMedia(constraints);
                     };
                 }
                 
-                // 카메라 권한 체크를 항상 granted로 리턴
-                if (navigator.permissions && navigator.permissions.query) {
-                    const originalQuery = navigator.permissions.query.bind(navigator.permissions);
+                // 실시간 스캔 버튼 표시 (네이티브 스캐너 사용)
+                if (hasNativeScanner) {
+                    console.log('Native scanner available - keeping live scan button');
                     
-                    navigator.permissions.query = function(permissionDesc) {
-                        if (permissionDesc.name === 'camera') {
-                            return Promise.resolve({state: 'granted'});
+                    // 페이지 로드 후 버튼 텍스트 변경
+                    setTimeout(function() {
+                        var liveButton = document.getElementById('live-scan-button');
+                        if (liveButton) {
+                            // 버튼 텍스트 변경
+                            var textElement = liveButton.querySelector('.text');
+                            if (textElement) {
+                                textElement.textContent = '실시간 스캔 (네이티브)';
+                            }
+                            console.log('Live scan button updated for native scanner');
                         }
-                        return originalQuery(permissionDesc);
-                    };
+                    }, 500);
+                } else {
+                    // 네이티브 스캐너 없으면 버튼 숨김
+                    setTimeout(function() {
+                        var liveButton = document.getElementById('live-scan-button');
+                        if (liveButton) {
+                            liveButton.style.display = 'none';
+                        }
+                    }, 500);
                 }
                 
-                console.log('Camera polyfill injected successfully');
+                // getUserMedia는 여전히 차단 (웹 기반 스캔 방지)
+                if (!navigator.mediaDevices) {
+                    navigator.mediaDevices = {};
+                }
+                
+                navigator.mediaDevices.getUserMedia = function(constraints) {
+                    console.log('getUserMedia blocked - use native scanner instead');
+                    return Promise.reject(new Error('Use native scanner'));
+                };
+                
+                // permissions API
+                if (!navigator.permissions) {
+                    navigator.permissions = {};
+                }
+                
+                navigator.permissions.query = function(permissionDesc) {
+                    if (permissionDesc.name === 'camera') {
+                        return Promise.resolve({ state: 'granted', name: 'camera' });
+                    }
+                    return Promise.resolve({ state: 'prompt' });
+                };
+                
+                console.log('=== Polyfill Complete ===');
             })();
         """.trimIndent()
         
-        webView.evaluateJavascript(polyfill, null)
-    }
-
-    // JavaScript에서 호출할 수 있는 네이티브 카메라 인터페이스
-    inner class CameraInterface {
-        @JavascriptInterface
-        fun hasPermission(): Boolean {
-            return hasCameraPermission()
-        }
-
-        @JavascriptInterface
-        fun requestPermission() {
-            runOnUiThread {
-                if (!hasCameraPermission()) {
-                    checkAndRequestPermissions()
-                }
-            }
+        webView.evaluateJavascript(polyfill) { result ->
+            Log.d(TAG, "Polyfill injection result: $result")
         }
     }
 
@@ -244,6 +291,7 @@ class MainActivity : AppCompatActivity() {
             val storageDir = getExternalFilesDir(null)
             File.createTempFile("JPEG_${timeStamp}_", ".jpg", storageDir)
         } catch (e: Exception) {
+            Log.e(TAG, "Failed to create image file", e)
             null
         }
     }
@@ -253,7 +301,6 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.CAMERA
         )
         
-        // Android 13 이상
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
         } else {
@@ -315,7 +362,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 앱이 다시 활성화될 때 권한 재확인
         if (!hasCameraPermission()) {
             checkAndRequestPermissions()
         }
@@ -324,5 +370,51 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         webView.destroy()
         super.onDestroy()
+    }
+
+    // JavaScript에서 호출할 수 있는 카메라 인터페이스
+    inner class CameraInterface {
+        @JavascriptInterface
+        fun openScanner() {
+            Log.d(TAG, "openScanner called from JavaScript")
+            runOnUiThread {
+                if (hasCameraPermission()) {
+                    val intent = Intent(this@MainActivity, BarcodeScannerActivity::class.java)
+                    scannerLauncher.launch(intent)
+                } else {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "카메라 권한이 필요합니다",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    checkAndRequestPermissions()
+                }
+            }
+        }
+        
+        @JavascriptInterface
+        fun hasPermission(): Boolean {
+            return hasCameraPermission()
+        }
+    }
+    
+    // 스캔된 바코드를 WebView에 주입
+    private fun injectScannedBarcode(barcode: String) {
+        val script = """
+            (function() {
+                console.log('Injecting scanned barcode: $barcode');
+                
+                // doIpgoScan 함수 호출
+                if (typeof doIpgoScan === 'function') {
+                    doIpgoScan('$barcode');
+                } else {
+                    console.error('doIpgoScan function not found');
+                }
+            })();
+        """.trimIndent()
+        
+        webView.evaluateJavascript(script) { result ->
+            Log.d(TAG, "Barcode injection result: $result")
+        }
     }
 }
