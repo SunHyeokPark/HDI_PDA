@@ -1,40 +1,72 @@
 package com.hdi.barcodescan
 
 import android.Manifest
+import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import android.webkit.PermissionRequest
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
     
     private lateinit var webView: WebView
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private var cameraPhotoUri: Uri? = null
     
     companion object {
         private const val CAMERA_PERMISSION_CODE = 100
         private const val ALL_PERMISSIONS_CODE = 101
     }
 
+    // 파일 선택 결과 처리
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val data = result.data
+            val results = if (data == null || data.data == null) {
+                cameraPhotoUri?.let { arrayOf(it) }
+            } else {
+                arrayOf(data.data!!)
+            }
+            filePathCallback?.onReceiveValue(results)
+        } else {
+            filePathCallback?.onReceiveValue(null)
+        }
+        filePathCallback = null
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // 권한 확인 및 요청
-        checkAndRequestPermissions()
-
         webView = findViewById(R.id.webview)
-        setupWebView()
         
-        // HTTP 사이트 로드 - 여기에 실제 URL 입력
-        webView.loadUrl("http://erp.hdi21.co.kr/mobile/BarcodeIn_scan_camera_ver.asp")
+        // 권한이 없으면 먼저 요청
+        if (!hasCameraPermission()) {
+            checkAndRequestPermissions()
+        } else {
+            setupWebView()
+            webView.loadUrl("http://erp.hdi21.co.kr/mobile/BarcodeIn_scan_camera_ver.asp")
+        }
     }
 
     private fun setupWebView() {
@@ -57,32 +89,64 @@ class MainActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_DEFAULT
         }
 
-        // WebChromeClient - 카메라 권한 처리
+        // WebChromeClient - 카메라 권한 및 파일 선택 처리
         webView.webChromeClient = object : WebChromeClient() {
+            
+            // 파일 선택 (카메라 포함)
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                this@MainActivity.filePathCallback?.onReceiveValue(null)
+                this@MainActivity.filePathCallback = filePathCallback
+
+                val takePictureIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                if (takePictureIntent.resolveActivity(packageManager) != null) {
+                    val photoFile = createImageFile()
+                    photoFile?.also {
+                        cameraPhotoUri = FileProvider.getUriForFile(
+                            this@MainActivity,
+                            "${applicationContext.packageName}.fileprovider",
+                            it
+                        )
+                        takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, cameraPhotoUri)
+                    }
+                }
+
+                val contentSelectionIntent = Intent(Intent.ACTION_GET_CONTENT)
+                contentSelectionIntent.addCategory(Intent.CATEGORY_OPENABLE)
+                contentSelectionIntent.type = "image/*"
+
+                val intentArray = arrayOf(takePictureIntent)
+
+                val chooserIntent = Intent(Intent.ACTION_CHOOSER)
+                chooserIntent.putExtra(Intent.EXTRA_INTENT, contentSelectionIntent)
+                chooserIntent.putExtra(Intent.EXTRA_TITLE, "이미지 선택")
+                chooserIntent.putExtra(Intent.EXTRA_INITIAL_INTENTS, intentArray)
+
+                fileChooserLauncher.launch(chooserIntent)
+                return true
+            }
+            
+            // 카메라 권한 요청
             override fun onPermissionRequest(request: PermissionRequest?) {
                 runOnUiThread {
-                    request?.resources?.forEach { resource ->
-                        if (resource == PermissionRequest.RESOURCE_VIDEO_CAPTURE) {
-                            if (hasCameraPermission()) {
-                                request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
-                            } else {
-                                request.deny()
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    "카메라 권한이 필요합니다",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                            return@runOnUiThread
-                        }
+                    if (hasCameraPermission()) {
+                        request?.grant(request.resources)
+                    } else {
+                        request?.deny()
+                        Toast.makeText(
+                            this@MainActivity,
+                            "카메라 권한이 필요합니다",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
-                    request?.grant(request.resources)
                 }
             }
 
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 super.onProgressChanged(view, newProgress)
-                // 진행률 표시 (선택적)
                 title = if (newProgress == 100) {
                     "입고 스캐너"
                 } else {
@@ -105,6 +169,16 @@ class MainActivity : AppCompatActivity() {
                     Toast.LENGTH_SHORT
                 ).show()
             }
+        }
+    }
+
+    private fun createImageFile(): File? {
+        return try {
+            val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+            val storageDir = getExternalFilesDir(null)
+            File.createTempFile("JPEG_${timeStamp}_", ".jpg", storageDir)
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -146,15 +220,15 @@ class MainActivity : AppCompatActivity() {
             ALL_PERMISSIONS_CODE, CAMERA_PERMISSION_CODE -> {
                 val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
                 
-                val message = if (allGranted) {
-                    "권한이 허용되었습니다"
+                if (allGranted) {
+                    Toast.makeText(this, "권한이 허용되었습니다", Toast.LENGTH_SHORT).show()
+                    setupWebView()
+                    webView.loadUrl("http://erp.hdi21.co.kr/mobile/BarcodeIn_scan_camera_ver.asp")
                 } else {
-                    "카메라 권한이 필요합니다. 설정에서 권한을 허용해주세요."
+                    Toast.makeText(this, 
+                        "카메라 권한이 필요합니다. 설정에서 권한을 허용해주세요.", 
+                        Toast.LENGTH_LONG).show()
                 }
-                
-                Toast.makeText(this, message, 
-                    if (allGranted) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
-                ).show()
             }
         }
     }
