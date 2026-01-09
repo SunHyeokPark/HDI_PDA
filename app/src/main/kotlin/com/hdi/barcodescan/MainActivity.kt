@@ -33,7 +33,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var cameraPhotoUri: Uri? = null
-    private var currentUrl: String = ""
+    private var lastValidUrl: String = ""
+    private var isProcessingBarcode = false
     
     companion object {
         private const val TAG = "HDI_PDA"
@@ -45,24 +46,35 @@ class MainActivity : AppCompatActivity() {
     private val scannerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        Log.d(TAG, "Scanner result: resultCode=${result.resultCode}")
+        
         if (result.resultCode == Activity.RESULT_OK) {
             val barcode = result.data?.getStringExtra(BarcodeScannerActivity.RESULT_BARCODE)
+            Log.d(TAG, "Scanned barcode: $barcode")
+            
             if (barcode != null && barcode.isNotEmpty()) {
-                Log.d(TAG, "Scanned barcode received: $barcode")
+                // 바코드 처리 플래그 설정
+                isProcessingBarcode = true
                 
                 // WebView로 포커스 복귀
                 webView.requestFocus()
                 
-                // 충분한 지연 후 바코드 주입
+                // 1초 후 바코드 주입 (안정성)
                 webView.postDelayed({
                     injectScannedBarcode(barcode)
-                }, 500)
+                    
+                    // 3초 후 플래그 해제
+                    webView.postDelayed({
+                        isProcessingBarcode = false
+                        Log.d(TAG, "Barcode processing complete")
+                    }, 3000)
+                }, 1000)
             } else {
-                Log.e(TAG, "Empty barcode received")
+                Log.e(TAG, "Empty barcode")
                 webView.requestFocus()
             }
         } else {
-            Log.d(TAG, "Scanner cancelled or failed")
+            Log.d(TAG, "Scanner cancelled")
             webView.requestFocus()
         }
     }
@@ -126,7 +138,6 @@ class MainActivity : AppCompatActivity() {
                 filePathCallback: ValueCallback<Array<Uri>>?,
                 fileChooserParams: FileChooserParams?
             ): Boolean {
-                Log.d(TAG, "onShowFileChooser called")
                 this@MainActivity.filePathCallback?.onReceiveValue(null)
                 this@MainActivity.filePathCallback = filePathCallback
 
@@ -159,55 +170,79 @@ class MainActivity : AppCompatActivity() {
             }
             
             override fun onPermissionRequest(request: PermissionRequest?) {
-                Log.d(TAG, "onPermissionRequest: ${request?.resources?.joinToString()}")
                 runOnUiThread {
                     request?.grant(request.resources)
-                    Log.d(TAG, "Permissions granted: ${request?.resources?.joinToString()}")
                 }
             }
 
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 super.onProgressChanged(view, newProgress)
-                title = if (newProgress == 100) {
-                    "HDI PDA"
-                } else {
-                    "로딩중... $newProgress%"
-                }
+                title = if (newProgress == 100) "HDI PDA" else "로딩중... $newProgress%"
             }
 
             override fun onConsoleMessage(message: android.webkit.ConsoleMessage?): Boolean {
-                Log.d(TAG, "WebView Console: ${message?.message()} -- Line ${message?.lineNumber()} of ${message?.sourceId()}")
+                Log.d(TAG, "Console: ${message?.message()}")
                 return true
             }
         }
 
         webView.webViewClient = object : WebViewClient() {
-            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                super.onPageStarted(view, url, favicon)
-                Log.d(TAG, "Page started loading: $url")
-                
-                // 페이지 시작 시 즉시 Polyfill 주입
-                injectCameraPolyfill()
-            }
             
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: ""
-                Log.d(TAG, "shouldOverrideUrlLoading: $url")
+                Log.d(TAG, "URL loading: $url")
+                Log.d(TAG, "isProcessingBarcode: $isProcessingBarcode")
+                Log.d(TAG, "lastValidUrl: $lastValidUrl")
                 
+                // 바코드 처리 중에 초기 화면으로 돌아가려고 하면 막기!
+                if (isProcessingBarcode) {
+                    if (url == "http://erp.hdi21.co.kr/mobile" || 
+                        url == "http://erp.hdi21.co.kr/mobile/") {
+                        Log.e(TAG, "⛔ BLOCKED: Navigation to home during barcode processing!")
+                        Toast.makeText(
+                            this@MainActivity,
+                            "바코드 처리중...",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        return true  // true = 막기!
+                    }
+                }
+                
+                // 같은 도메인은 허용
                 if (url.contains("erp.hdi21.co.kr")) {
-                    currentUrl = url
+                    // BarcodeIn 페이지는 기억
+                    if (url.contains("BarcodeIn") || url.contains("barcodein")) {
+                        lastValidUrl = url
+                        Log.d(TAG, "✓ Saved lastValidUrl: $lastValidUrl")
+                    }
                     return false
                 }
                 
                 return super.shouldOverrideUrlLoading(view, request)
             }
             
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                Log.d(TAG, "Page started: $url")
+                
+                // 바코드 처리 중에 초기 화면으로 가려고 하면 막고 원래 페이지로 복구!
+                if (isProcessingBarcode && lastValidUrl.isNotEmpty()) {
+                    if (url == "http://erp.hdi21.co.kr/mobile" || 
+                        url == "http://erp.hdi21.co.kr/mobile/") {
+                        Log.e(TAG, "⛔ BLOCKED page start! Restoring: $lastValidUrl")
+                        view?.stopLoading()
+                        view?.loadUrl(lastValidUrl)
+                        return
+                    }
+                }
+                
+                injectCameraPolyfill()
+            }
+            
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                Log.d(TAG, "Page finished loading: $url")
-                currentUrl = url ?: ""
+                Log.d(TAG, "Page finished: $url")
                 
-                // 페이지 완료 후에도 Polyfill 주입
                 injectCameraPolyfill()
             }
 
@@ -218,11 +253,6 @@ class MainActivity : AppCompatActivity() {
                 failingUrl: String?
             ) {
                 Log.e(TAG, "WebView error: $description")
-                Toast.makeText(
-                    this@MainActivity,
-                    "오류: $description",
-                    Toast.LENGTH_SHORT
-                ).show()
             }
         }
     }
@@ -230,45 +260,28 @@ class MainActivity : AppCompatActivity() {
     private fun injectCameraPolyfill() {
         val polyfill = """
             (function() {
-                console.log('=== HDI PDA Polyfill START ===');
+                console.log('=== Polyfill injection ===');
                 
                 var hasNativeScanner = typeof AndroidCamera !== 'undefined' && 
                                       typeof AndroidCamera.openScanner === 'function';
                 
-                console.log('Native scanner available:', hasNativeScanner);
-                
                 if (hasNativeScanner) {
-                    // 즉시 startLiveScanner 교체
                     window.startLiveScanner = function() {
-                        console.log('!!! Native scanner opening !!!');
+                        console.log('!!! Opening native scanner !!!');
                         try {
                             AndroidCamera.openScanner();
                         } catch(e) {
-                            console.error('Native scanner error:', e);
-                            alert('스캐너 오류: ' + e.message);
+                            console.error('Scanner error:', e);
                         }
                         return false;
                     };
-                    
-                    // openImageScanner도 가로채기 (안전장치)
-                    var originalOpenImageScanner = window.openImageScanner;
-                    window.openImageScanner = function() {
-                        console.log('openImageScanner intercepted');
-                        if (originalOpenImageScanner) {
-                            originalOpenImageScanner();
-                        }
-                    };
-                    
-                    console.log('startLiveScanner replaced successfully');
                 }
                 
-                // getUserMedia 완전 차단
                 if (!navigator.mediaDevices) {
                     navigator.mediaDevices = {};
                 }
                 
                 navigator.mediaDevices.getUserMedia = function() {
-                    console.log('getUserMedia blocked');
                     return Promise.reject(new Error('Use native scanner'));
                 };
                 
@@ -282,60 +295,52 @@ class MainActivity : AppCompatActivity() {
                     }
                     return Promise.resolve({ state: 'prompt' });
                 };
-                
-                console.log('=== Polyfill Complete ===');
             })();
         """.trimIndent()
         
-        // 즉시 실행 + 약간 지연 후 다시 실행 (확실하게)
         webView.post {
-            webView.evaluateJavascript(polyfill) { result ->
-                Log.d(TAG, "Polyfill injection result: $result")
-            }
+            webView.evaluateJavascript(polyfill, null)
         }
-        
-        // 0.5초 후 다시 주입 (페이지 로드 완료 후)
-        webView.postDelayed({
-            webView.evaluateJavascript(polyfill) { result ->
-                Log.d(TAG, "Polyfill re-injection result: $result")
-            }
-        }, 500)
     }
 
     private fun injectScannedBarcode(barcode: String) {
-        Log.d(TAG, "Injecting barcode: $barcode")
+        Log.d(TAG, "🔥 Injecting barcode: $barcode")
         
         val script = """
             (function() {
-                console.log('>>> Injecting scanned barcode: $barcode <<<');
+                console.log('🔥 BARCODE INJECTION: $barcode');
                 
                 var scanInput = document.getElementById('scan_bar');
+                
                 if (scanInput) {
                     scanInput.value = '$barcode';
-                    console.log('Set scan_bar value');
+                    console.log('✓ Set value');
                     
                     var event = new Event('keyup', { bubbles: true, cancelable: true });
                     scanInput.dispatchEvent(event);
-                    console.log('Triggered keyup event');
+                    console.log('✓ Triggered keyup');
                     
                     scanInput.focus();
-                    console.log('Focused scan_bar');
+                    console.log('✓ SUCCESS!');
+                    
+                    return 'SUCCESS';
                 } else {
-                    console.error('scan_bar input not found');
+                    console.error('✗ scan_bar not found!');
                     
                     if (typeof doIpgoScan === 'function') {
                         console.log('Calling doIpgoScan directly');
                         doIpgoScan('$barcode');
-                    } else {
-                        console.error('doIpgoScan function not found');
+                        return 'DIRECT_CALL';
                     }
+                    
+                    return 'FAILED';
                 }
             })();
         """.trimIndent()
         
         webView.post {
             webView.evaluateJavascript(script) { result ->
-                Log.d(TAG, "Barcode injection result: $result")
+                Log.d(TAG, "Injection result: $result")
             }
         }
     }
@@ -343,18 +348,13 @@ class MainActivity : AppCompatActivity() {
     inner class CameraInterface {
         @JavascriptInterface
         fun openScanner() {
-            Log.d(TAG, ">>> openScanner called from JavaScript <<<")
+            Log.d(TAG, "📸 openScanner called")
             runOnUiThread {
                 if (hasCameraPermission()) {
-                    Log.d(TAG, ">>> Launching scanner activity <<<")
                     val intent = Intent(this@MainActivity, BarcodeScannerActivity::class.java)
                     scannerLauncher.launch(intent)
                 } else {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "카메라 권한이 필요합니다",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(this@MainActivity, "카메라 권한 필요", Toast.LENGTH_SHORT).show()
                     checkAndRequestPermissions()
                 }
             }
@@ -378,9 +378,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkAndRequestPermissions() {
-        val permissions = mutableListOf(
-            Manifest.permission.CAMERA
-        )
+        val permissions = mutableListOf(Manifest.permission.CAMERA)
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.READ_MEDIA_IMAGES)
@@ -421,13 +419,10 @@ class MainActivity : AppCompatActivity() {
                 val allGranted = grantResults.all { it == PackageManager.PERMISSION_GRANTED }
                 
                 if (allGranted) {
-                    Toast.makeText(this, "권한이 허용되었습니다", Toast.LENGTH_SHORT).show()
                     setupWebView()
                     webView.loadUrl("http://erp.hdi21.co.kr/mobile")
                 } else {
-                    Toast.makeText(this, 
-                        "카메라 권한이 필요합니다. 설정에서 권한을 허용해주세요.", 
-                        Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "권한 필요", Toast.LENGTH_LONG).show()
                 }
             }
         }
