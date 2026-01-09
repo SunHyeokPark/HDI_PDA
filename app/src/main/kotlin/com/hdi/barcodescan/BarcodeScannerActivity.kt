@@ -123,17 +123,15 @@ class BarcodeScannerActivity : AppCompatActivity() {
                 (getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator)?.vibrate(200)
             }
             
+            Log.d(TAG, "Barcode detected: $cleanBarcode")
+            
             // 결과 반환
             val resultIntent = Intent()
             resultIntent.putExtra(RESULT_BARCODE, cleanBarcode)
             setResult(RESULT_OK, resultIntent)
             
-            Log.d(TAG, "Barcode scan complete: $cleanBarcode")
-            
-            // 약간 지연 후 종료 (사용자가 성공 메시지 볼 수 있도록)
-            previewView.postDelayed({
-                finish()
-            }, 800)
+            // 즉시 종료 (깔끔하게!)
+            finish()
         }
     }
 
@@ -170,7 +168,17 @@ class BarcodeScannerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "Scanner Activity destroyed")
+        
+        // 카메라 완전 해제
+        isScanning = false
         cameraExecutor.shutdown()
+        
+        try {
+            cameraExecutor.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (e: InterruptedException) {
+            Log.e(TAG, "Camera executor shutdown interrupted", e)
+        }
     }
 
     // ML Kit 바코드 분석기
