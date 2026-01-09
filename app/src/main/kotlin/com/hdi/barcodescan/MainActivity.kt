@@ -20,48 +20,60 @@ import androidx.core.content.ContextCompat
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
-
-    // 스캔 중 홈(/mobile)로 튕김 방지용
-    private var isProcessingBarcode: Boolean = false
-
-    // “돌아갈 마지막 정상 URL”
-    private var lastValidUrl: String = ""
+    private var isProcessingBarcode = false
+    private var savedUrl: String = ""
+    private var isReturningFromScanner = false
 
     companion object {
         private const val TAG = "HDI_PDA"
-        private const val REQ_CAMERA = 100
         private const val HOME_URL = "http://erp.hdi21.co.kr/mobile"
-        private const val HOME_HOST = "erp.hdi21.co.kr"
-        private const val HOME_PATH_PREFIX = "/mobile"
+        private const val BARCODE_PAGE_PATTERN = "BarcodeIn"
     }
 
-    private val scannerLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == Activity.RESULT_OK) {
-                val barcode = result.data?.getStringExtra(BarcodeScannerActivity.RESULT_BARCODE)
-                if (!barcode.isNullOrEmpty()) {
-                    Log.d(TAG, "Scanned: $barcode")
-
-                    isProcessingBarcode = true
-
-                    // 혹시 lastValidUrl이 비어있으면 현재 URL이라도 잡아둠
-                    if (lastValidUrl.isBlank()) {
-                        webView.url?.let { if (it.isNotBlank()) lastValidUrl = it }
-                    }
-
-                    // 안정성: 1초 뒤 주입
-                    webView.postDelayed({
-                        insertBarcodeAndPressEnter(barcode)
-
-                        // 2.5~3초 후 해제(웹 처리 시간 고려)
+    private val scannerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        Log.d(TAG, "======== Scanner returned ========")
+        Log.d(TAG, "Result code: ${result.resultCode}")
+        Log.d(TAG, "Saved URL: $savedUrl")
+        
+        isReturningFromScanner = true
+        
+        if (result.resultCode == Activity.RESULT_OK) {
+            val barcode = result.data?.getStringExtra(BarcodeScannerActivity.RESULT_BARCODE)
+            if (!barcode.isNullOrEmpty()) {
+                Log.d(TAG, "✓ Barcode received: $barcode")
+                
+                // 바코드 처리 플래그 설정
+                isProcessingBarcode = true
+                
+                // WebView 활성화 대기
+                webView.post {
+                    // URL 확인 및 복구
+                    val currentUrl = webView.url ?: ""
+                    Log.d(TAG, "Current URL after scanner: $currentUrl")
+                    
+                    if (shouldRestoreUrl(currentUrl)) {
+                        Log.w(TAG, "⚠️ Wrong page detected! Restoring: $savedUrl")
+                        webView.loadUrl(savedUrl)
+                        
+                        // 페이지 로드 완료 후 바코드 주입
                         webView.postDelayed({
-                            isProcessingBarcode = false
-                            Log.d(TAG, "Barcode processing released")
-                        }, 2500)
-                    }, 1000)
+                            injectBarcode(barcode)
+                        }, 1500)
+                    } else {
+                        // 정상 페이지면 바로 주입
+                        webView.postDelayed({
+                            injectBarcode(barcode)
+                        }, 800)
+                    }
                 }
             }
+        } else {
+            Log.d(TAG, "Scanner cancelled")
+            isReturningFromScanner = false
         }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,16 +83,14 @@ class MainActivity : AppCompatActivity() {
 
         if (hasCameraPermission()) {
             setupWebView()
-
+            
             if (savedInstanceState != null) {
-                // ✅ 재생성(recreate)되어도 마지막 웹 상태 복원
+                // Activity 재생성 시 상태 복원
                 webView.restoreState(savedInstanceState)
-                // restoreState 후 url이 null일 수 있어 방어
-                webView.url?.let { if (it.isNotBlank()) lastValidUrl = it }
+                savedUrl = savedInstanceState.getString("savedUrl", "")
+                Log.d(TAG, "Restored URL: $savedUrl")
             } else {
-                // ✅ 최초 실행만 홈 로드
                 webView.loadUrl(HOME_URL)
-                lastValidUrl = HOME_URL
             }
         } else {
             requestCameraPermission()
@@ -89,96 +99,151 @@ class MainActivity : AppCompatActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        // ✅ WebView 상태 저장 (뒤로가기 스택/현재 페이지 등)
         webView.saveState(outState)
+        outState.putString("savedUrl", savedUrl)
+        Log.d(TAG, "Saved URL to bundle: $savedUrl")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Log.d(TAG, "onResume - isReturningFromScanner: $isReturningFromScanner")
+        
+        // 스캐너에서 돌아온 경우 WebView 재활성화
+        if (isReturningFromScanner) {
+            webView.onResume()
+            webView.resumeTimers()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        Log.d(TAG, "onPause")
+        
+        // 스캐너로 가는 경우가 아니면 일시정지
+        if (!isProcessingBarcode) {
+            webView.onPause()
+            webView.pauseTimers()
+        }
     }
 
     private fun setupWebView() {
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
+            
+            // 백그라운드 상태 유지
+            setSupportMultipleWindows(false)
         }
 
-        // JavaScript Bridge
         webView.addJavascriptInterface(ScannerBridge(), "Scanner")
 
         webView.webViewClient = object : WebViewClient() {
 
-            // Android N+ (요즘 대부분 PDA는 여기로 들어옴)
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                val url = request?.url?.toString().orEmpty()
-                return handleUrlGuard(view, url)
+                val url = request?.url?.toString() ?: ""
+                return handleUrlChange(url)
             }
 
-            // 구형 단말(레거시)
             @Deprecated("Deprecated in Java")
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                return handleUrlGuard(view, url.orEmpty())
+                return handleUrlChange(url ?: "")
+            }
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                Log.d(TAG, "Page started: $url")
+                Log.d(TAG, "isProcessingBarcode: $isProcessingBarcode")
+                
+                // 바코드 처리 중 홈으로 가려는 시도 차단
+                if (isProcessingBarcode && isHomeUrl(url)) {
+                    Log.e(TAG, "⛔ BLOCKED home navigation during barcode processing")
+                    view?.stopLoading()
+                    
+                    if (savedUrl.isNotEmpty()) {
+                        view?.post {
+                            view.loadUrl(savedUrl)
+                        }
+                    }
+                }
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                val u = url.orEmpty()
-                Log.d(TAG, "Page finished: $u")
+                Log.d(TAG, "Page finished: $url")
 
-                // 정상 URL(도메인 내, 홈 제외)은 계속 lastValidUrl로 갱신
-                if (isOurDomain(u) && !isHomeUrl(u)) {
-                    lastValidUrl = u
-                    Log.d(TAG, "Saved lastValidUrl: $lastValidUrl")
+                val currentUrl = url ?: ""
+                
+                // 바코드 페이지는 저장
+                if (isBarcodePageUrl(currentUrl)) {
+                    savedUrl = currentUrl
+                    Log.d(TAG, "✓ Saved barcode page URL: $savedUrl")
                 }
 
+                // 스캐너 버튼 연결
                 connectScannerButton()
             }
         }
     }
 
-    /**
-     * 스캔 처리 중 홈으로 튕기면 차단 + 복구
-     */
-    private fun handleUrlGuard(view: WebView?, url: String): Boolean {
-        if (url.isBlank()) return false
+    private fun handleUrlChange(url: String): Boolean {
+        Log.d(TAG, "URL change attempt: $url")
+        Log.d(TAG, "isProcessingBarcode: $isProcessingBarcode, savedUrl: $savedUrl")
 
-        Log.d(TAG, "URL loading: $url / isProcessingBarcode=$isProcessingBarcode / lastValidUrl=$lastValidUrl")
-
-        // 스캔 처리 중이면 홈 이동을 막음 (http/https + 쿼리/해시 포함 커버)
+        // 바코드 처리 중 홈으로 가는 것 차단
         if (isProcessingBarcode && isHomeUrl(url)) {
-            Log.w(TAG, "⛔ BLOCKED navigation to HOME during barcode processing: $url")
-            Toast.makeText(this@MainActivity, "바코드 처리중...", Toast.LENGTH_SHORT).show()
-
-            // 가능한 경우, 이전 정상 페이지로 즉시 복구 시도
-            if (lastValidUrl.isNotBlank() && view != null) {
-                view.post {
-                    try {
-                        view.stopLoading()
-                        view.loadUrl(lastValidUrl)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Restore failed", e)
-                    }
+            Log.e(TAG, "⛔ BLOCKED URL change to home during barcode processing")
+            Toast.makeText(this, "바코드 처리중...", Toast.LENGTH_SHORT).show()
+            
+            // 저장된 URL로 복구
+            if (savedUrl.isNotEmpty()) {
+                webView.post {
+                    webView.stopLoading()
+                    webView.loadUrl(savedUrl)
                 }
             }
-            return true // true = 이 네비게이션을 WebView가 진행하지 않음
+            return true // 차단
         }
 
-        // 도메인 밖은 기본 동작(혹은 필요하면 외부 브라우저로 보내도록 확장 가능)
-        if (!isOurDomain(url)) return false
+        // 도메인 내 이동은 허용
+        if (url.contains("erp.hdi21.co.kr")) {
+            return false
+        }
 
-        // 도메인 내는 허용
         return false
     }
 
-    /**
-     * 웹의 “실시간 스캔” 버튼이 startLiveScanner()를 호출하도록 연결
-     */
+    private fun shouldRestoreUrl(currentUrl: String): Boolean {
+        // 홈 페이지로 잘못 갔거나, 저장된 URL과 다른 경우
+        return savedUrl.isNotEmpty() && 
+               (isHomeUrl(currentUrl) || !currentUrl.contains(BARCODE_PAGE_PATTERN))
+    }
+
+    private fun isHomeUrl(url: String?): Boolean {
+        if (url.isNullOrEmpty()) return false
+        val cleanUrl = url.split("?")[0].split("#")[0].trimEnd('/')
+        return cleanUrl == HOME_URL || 
+               cleanUrl == "$HOME_URL/" ||
+               cleanUrl == "http://erp.hdi21.co.kr/mobile"
+    }
+
+    private fun isBarcodePageUrl(url: String): Boolean {
+        return url.contains(BARCODE_PAGE_PATTERN, ignoreCase = true)
+    }
+
     private fun connectScannerButton() {
         val script = """
             (function() {
-                if (typeof Scanner !== 'undefined' && Scanner && typeof Scanner.openScanner === 'function') {
-                    // 기존 함수가 있으면 백업(원한다면 호출할 수 있음)
-                    var __old = window.startLiveScanner;
+                if (typeof Scanner !== 'undefined') {
                     window.startLiveScanner = function() {
-                        try { Scanner.openScanner(); } catch(e) { console.error(e); }
+                        console.log('Native scanner opening...');
+                        try {
+                            Scanner.openScanner();
+                        } catch(e) {
+                            console.error('Scanner error:', e);
+                        }
                         return false;
                     };
+                    console.log('Scanner button connected');
                 }
             })();
         """.trimIndent()
@@ -186,127 +251,105 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(script, null)
     }
 
-    /**
-     * scan_bar에 바코드 입력 + 엔터 유사 이벤트
-     * - 문자열 안전 주입(JSON.stringify)
-     * - input/change/keydown/keyup(Enter) 세트로 발사
-     */
-    private fun insertBarcodeAndPressEnter(barcode: String) {
+    private fun injectBarcode(barcode: String) {
+        Log.d(TAG, "🔥 Injecting barcode: $barcode")
+
         val script = """
             (function() {
                 try {
-                    var barcode = JSON.parse(${toJsStringLiteral(barcode)});
-                    console.log('Inject barcode:', barcode);
+                    console.log('🔥 Barcode injection start: $barcode');
                     
                     var input = document.getElementById('scan_bar');
                     if (!input) {
-                        console.error('scan_bar not found');
-                        // 사이트에 따라 직접 호출 함수가 있다면 여기에 추가 가능
-                        if (typeof doIpgoScan === 'function') {
-                            doIpgoScan(barcode);
-                            return 'DIRECT_CALL';
-                        }
-                        return 'FAIL_NO_INPUT';
+                        console.error('scan_bar not found!');
+                        return 'FAIL';
                     }
                     
+                    // 1. 포커스
                     input.focus();
-                    input.value = barcode;
-
-                    // input/change 이벤트 (프레임워크들이 이걸 보는 경우 많음)
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-
-                    // Enter keydown/keyup
-                    var kd = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 });
-                    var ku = new KeyboardEvent('keyup',   { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 });
-                    input.dispatchEvent(kd);
-                    input.dispatchEvent(ku);
-
-                    return 'OK';
-                } catch (e) {
-                    console.error('Injection error', e);
-                    return 'FAIL_EXCEPTION';
+                    
+                    // 2. 값 설정
+                    input.value = '$barcode';
+                    console.log('✓ Value set');
+                    
+                    // 3. 이벤트 발생
+                    var events = ['input', 'change', 'keyup'];
+                    events.forEach(function(eventType) {
+                        var event = new Event(eventType, { bubbles: true, cancelable: true });
+                        input.dispatchEvent(event);
+                    });
+                    
+                    // 4. Enter 키 이벤트
+                    var keyEvent = new KeyboardEvent('keyup', {
+                        bubbles: true,
+                        cancelable: true,
+                        keyCode: 13,
+                        which: 13
+                    });
+                    input.dispatchEvent(keyEvent);
+                    
+                    console.log('✓ Events triggered');
+                    return 'SUCCESS';
+                    
+                } catch(e) {
+                    console.error('Injection error:', e);
+                    return 'ERROR';
                 }
             })();
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
-            Log.d(TAG, "Insert result: $result")
+            Log.d(TAG, "Injection result: $result")
+            
+            // 3초 후 플래그 해제
+            webView.postDelayed({
+                isProcessingBarcode = false
+                isReturningFromScanner = false
+                Log.d(TAG, "Barcode processing complete")
+            }, 3000)
         }
     }
 
-    /**
-     * JS에 안전하게 넣기 위한 문자열 리터럴
-     * 예: "ABC" -> "\"ABC\"" (JSON.parse로 다시 문자열 복원)
-     */
-    private fun toJsStringLiteral(value: String): String {
-        // Kotlin에서 JSON 문자열로 안전하게 만들기(간단 escape)
-        val escaped = buildString(value.length + 16) {
-            append('"')
-            for (ch in value) {
-                when (ch) {
-                    '\\' -> append("\\\\")
-                    '"'  -> append("\\\"")
-                    '\n' -> append("\\n")
-                    '\r' -> append("\\r")
-                    '\t' -> append("\\t")
-                    else -> append(ch)
-                }
-            }
-            append('"')
-        }
-        return escaped
-    }
-
-    /**
-     * 홈 URL 판정 (http/https, 쿼리/해시 포함 커버)
-     */
-    private fun isHomeUrl(url: String): Boolean {
-        return try {
-            val u = Uri.parse(url)
-            val hostOk = (u.host ?: "").contains(HOME_HOST, ignoreCase = true)
-            val path = u.path ?: ""
-            hostOk && path.startsWith(HOME_PATH_PREFIX)
-                    // /mobile, /mobile/, /mobile/index.asp 등 전부 포함
-        } catch (_: Exception) {
-            // 파싱 실패 시 보수적으로 문자열로 판단
-            url.startsWith(HOME_URL, ignoreCase = true) ||
-                    url.startsWith("https://$HOME_HOST/mobile", ignoreCase = true)
-        }
-    }
-
-    private fun isOurDomain(url: String): Boolean {
-        return try {
-            val u = Uri.parse(url)
-            (u.host ?: "").contains(HOME_HOST, ignoreCase = true)
-        } catch (_: Exception) {
-            url.contains(HOME_HOST, ignoreCase = true)
-        }
-    }
-
-    // JS에서 호출되는 브릿지
     inner class ScannerBridge {
         @JavascriptInterface
         fun openScanner() {
+            Log.d(TAG, "📸 openScanner called")
             runOnUiThread {
                 if (hasCameraPermission()) {
+                    // 현재 URL 저장
+                    webView.url?.let { url ->
+                        if (isBarcodePageUrl(url)) {
+                            savedUrl = url
+                            Log.d(TAG, "✓ Saved URL before scanner: $savedUrl")
+                        }
+                    }
+                    
                     val intent = Intent(this@MainActivity, BarcodeScannerActivity::class.java)
                     scannerLauncher.launch(intent)
                 } else {
-                    Toast.makeText(this@MainActivity, "카메라 권한 필요", Toast.LENGTH_SHORT).show()
-                    requestCameraPermission()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "카메라 권한 필요",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         }
     }
 
     private fun hasCameraPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
-                PackageManager.PERMISSION_GRANTED
+        return ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestCameraPermission() {
-        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.CAMERA),
+            100
+        )
     }
 
     override fun onRequestPermissionsResult(
@@ -316,20 +359,22 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
-        if (requestCode == REQ_CAMERA) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+        if (requestCode == 100) {
+            if (grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            ) {
                 setupWebView()
                 webView.loadUrl(HOME_URL)
-                lastValidUrl = HOME_URL
-            } else {
-                Toast.makeText(this, "카메라 권한 필요", Toast.LENGTH_LONG).show()
             }
         }
     }
 
     override fun onBackPressed() {
-        if (webView.canGoBack()) webView.goBack()
-        else super.onBackPressed()
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            super.onBackPressed()
+        }
     }
 
     override fun onDestroy() {
