@@ -144,7 +144,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val contentSelectionIntent = Intent(Intent.ACTION_GET_CONTENT)
-                contentSelectionIntent.addCategory(Intent.CATEGORY_OPENABLE)
+                contentSelectionIntent.addCategory(Intent.CATEGORY.OPENABLE)
                 contentSelectionIntent.type = "image/*"
 
                 val intentArray = arrayOf(takePictureIntent)
@@ -182,15 +182,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                Log.d(TAG, "Page started loading: $url")
+                
+                // 페이지 시작 시 즉시 Polyfill 주입
+                injectCameraPolyfill()
+            }
+            
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                // URL 변경 감지
                 val url = request?.url?.toString() ?: ""
                 Log.d(TAG, "shouldOverrideUrlLoading: $url")
                 
-                // 같은 도메인 내에서만 로드 허용
                 if (url.contains("erp.hdi21.co.kr")) {
                     currentUrl = url
-                    return false  // WebView에서 처리
+                    return false
                 }
                 
                 return super.shouldOverrideUrlLoading(view, request)
@@ -201,7 +207,7 @@ class MainActivity : AppCompatActivity() {
                 Log.d(TAG, "Page finished loading: $url")
                 currentUrl = url ?: ""
                 
-                // Polyfill 주입
+                // 페이지 완료 후에도 Polyfill 주입
                 injectCameraPolyfill()
             }
 
@@ -224,7 +230,7 @@ class MainActivity : AppCompatActivity() {
     private fun injectCameraPolyfill() {
         val polyfill = """
             (function() {
-                console.log('=== HDI PDA Polyfill Injection ===');
+                console.log('=== HDI PDA Polyfill START ===');
                 
                 var hasNativeScanner = typeof AndroidCamera !== 'undefined' && 
                                       typeof AndroidCamera.openScanner === 'function';
@@ -232,23 +238,31 @@ class MainActivity : AppCompatActivity() {
                 console.log('Native scanner available:', hasNativeScanner);
                 
                 if (hasNativeScanner) {
-                    // startLiveScanner 함수 완전 교체
+                    // 즉시 startLiveScanner 교체
                     window.startLiveScanner = function() {
-                        console.log('>>> Native scanner opening <<<');
+                        console.log('!!! Native scanner opening !!!');
                         try {
                             AndroidCamera.openScanner();
-                            return false; // 이벤트 전파 중단
                         } catch(e) {
                             console.error('Native scanner error:', e);
-                            alert('스캐너를 열 수 없습니다.');
-                            return false;
+                            alert('스캐너 오류: ' + e.message);
+                        }
+                        return false;
+                    };
+                    
+                    // openImageScanner도 가로채기 (안전장치)
+                    var originalOpenImageScanner = window.openImageScanner;
+                    window.openImageScanner = function() {
+                        console.log('openImageScanner intercepted');
+                        if (originalOpenImageScanner) {
+                            originalOpenImageScanner();
                         }
                     };
                     
-                    console.log('startLiveScanner function replaced with native scanner');
+                    console.log('startLiveScanner replaced successfully');
                 }
                 
-                // getUserMedia 차단
+                // getUserMedia 완전 차단
                 if (!navigator.mediaDevices) {
                     navigator.mediaDevices = {};
                 }
@@ -263,7 +277,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 
                 navigator.permissions.query = function(desc) {
-                    if (desc.name === 'camera') {
+                    if (desc && desc.name === 'camera') {
                         return Promise.resolve({ state: 'granted', name: 'camera' });
                     }
                     return Promise.resolve({ state: 'prompt' });
@@ -273,11 +287,19 @@ class MainActivity : AppCompatActivity() {
             })();
         """.trimIndent()
         
+        // 즉시 실행 + 약간 지연 후 다시 실행 (확실하게)
         webView.post {
             webView.evaluateJavascript(polyfill) { result ->
                 Log.d(TAG, "Polyfill injection result: $result")
             }
         }
+        
+        // 0.5초 후 다시 주입 (페이지 로드 완료 후)
+        webView.postDelayed({
+            webView.evaluateJavascript(polyfill) { result ->
+                Log.d(TAG, "Polyfill re-injection result: $result")
+            }
+        }, 500)
     }
 
     private fun injectScannedBarcode(barcode: String) {
