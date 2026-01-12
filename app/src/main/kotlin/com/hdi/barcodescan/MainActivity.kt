@@ -19,7 +19,6 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private var pendingBarcode: String? = null
-    private var lastPageUrl: String = ""
 
     companion object {
         private const val TAG = "HDI_PDA"
@@ -29,8 +28,7 @@ class MainActivity : AppCompatActivity() {
     private val scannerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        Log.d(TAG, "========== Scanner returned ==========")
-        Log.d(TAG, "Result: ${result.resultCode}")
+        Log.d(TAG, "Scanner result: ${result.resultCode}")
         
         if (result.resultCode == Activity.RESULT_OK) {
             val barcode = result.data?.getStringExtra(BarcodeScannerActivity.RESULT_BARCODE)
@@ -51,11 +49,8 @@ class MainActivity : AppCompatActivity() {
             setupWebView()
             
             if (savedInstanceState != null) {
-                // 상태 복원
                 webView.restoreState(savedInstanceState)
-                lastPageUrl = savedInstanceState.getString("lastPageUrl", HOME_URL)
                 pendingBarcode = savedInstanceState.getString("pendingBarcode")
-                Log.d(TAG, "Restored - URL: $lastPageUrl, Barcode: $pendingBarcode")
             } else {
                 webView.loadUrl(HOME_URL)
             }
@@ -67,9 +62,7 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         webView.saveState(outState)
-        outState.putString("lastPageUrl", lastPageUrl)
         outState.putString("pendingBarcode", pendingBarcode)
-        Log.d(TAG, "Saved state - URL: $lastPageUrl, Barcode: $pendingBarcode")
     }
 
     override fun onResume() {
@@ -78,37 +71,11 @@ class MainActivity : AppCompatActivity() {
         
         webView.onResume()
         
-        // 대기 중인 바코드가 있으면 주입
         pendingBarcode?.let { barcode ->
-            Log.d(TAG, "Processing pending barcode: $barcode")
-            
-            // 충분한 시간 대기 후 주입
             webView.postDelayed({
-                val currentUrl = webView.url ?: ""
-                Log.d(TAG, "Current URL: $currentUrl")
-                
-                // 잘못된 페이지면 복구
-                if (currentUrl.contains("/mobile") && !currentUrl.contains("BarcodeIn")) {
-                    Log.w(TAG, "Wrong page! Restoring: $lastPageUrl")
-                    if (lastPageUrl.isNotEmpty() && lastPageUrl != HOME_URL) {
-                        webView.loadUrl(lastPageUrl)
-                        
-                        // 페이지 로드 후 바코드 주입
-                        webView.postDelayed({
-                            forceInsertBarcode(barcode)
-                            pendingBarcode = null
-                        }, 2000)
-                    } else {
-                        // lastPageUrl이 없으면 바로 주입 시도
-                        forceInsertBarcode(barcode)
-                        pendingBarcode = null
-                    }
-                } else {
-                    // 정상 페이지면 바로 주입
-                    forceInsertBarcode(barcode)
-                    pendingBarcode = null
-                }
-            }, 500)
+                forceInsertBarcode(barcode)
+                pendingBarcode = null
+            }, 800)
         }
     }
 
@@ -116,32 +83,24 @@ class MainActivity : AppCompatActivity() {
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            
-            // 백그라운드에서 상태 유지
-            setSupportMultipleWindows(false)
         }
 
+        // JavaScript 브릿지 추가
         webView.addJavascriptInterface(ScannerBridge(), "Scanner")
+        
+        // 디버깅 활성화
+        WebView.setWebContentsDebuggingEnabled(true)
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 Log.d(TAG, "Page finished: $url")
                 
-                url?.let {
-                    // BarcodeIn 페이지는 저장
-                    if (it.contains("BarcodeIn", ignoreCase = true)) {
-                        lastPageUrl = it
-                        Log.d(TAG, "Saved page URL: $lastPageUrl")
-                    }
-                }
+                // 강력한 오버라이드 주입!
+                injectPowerfulOverride()
                 
-                // 스캐너 버튼 연결
-                connectScanner()
-                
-                // 대기 중인 바코드가 있으면 주입
+                // 대기 중인 바코드 처리
                 pendingBarcode?.let { barcode ->
-                    Log.d(TAG, "Injecting pending barcode after page load: $barcode")
                     webView.postDelayed({
                         forceInsertBarcode(barcode)
                         pendingBarcode = null
@@ -151,120 +110,143 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun connectScanner() {
+    /**
+     * 강력한 오버라이드!
+     * Object.defineProperty를 사용하여 덮어쓸 수 없게 만듦
+     */
+    private fun injectPowerfulOverride() {
         val script = """
             (function() {
-                if (typeof Scanner !== 'undefined') {
-                    window.startLiveScanner = function() {
-                        console.log('Opening native scanner...');
+                console.log('========== HDI PDA Override Injection ==========');
+                
+                // Scanner 객체 확인
+                if (typeof Scanner === 'undefined') {
+                    console.error('✗ Scanner object not found!');
+                    return;
+                }
+                
+                console.log('✓ Scanner object found');
+                
+                // 네이티브 스캐너 함수
+                var nativeScanner = function() {
+                    console.log('!!! NATIVE SCANNER CALLED !!!');
+                    try {
                         Scanner.openScanner();
                         return false;
-                    };
-                    console.log('Scanner connected');
+                    } catch(e) {
+                        console.error('Native scanner error:', e);
+                        alert('스캐너 오류: ' + e.message);
+                        return false;
+                    }
+                };
+                
+                // startLiveScanner를 읽기 전용으로 덮어쓸 수 없게 만들기
+                try {
+                    Object.defineProperty(window, 'startLiveScanner', {
+                        value: nativeScanner,
+                        writable: false,      // 덮어쓸 수 없음!
+                        configurable: false,  // 재정의 불가!
+                        enumerable: true
+                    });
+                    console.log('✓ startLiveScanner locked with native scanner');
+                } catch(e) {
+                    // 이미 정의되어 있으면 강제로 교체
+                    console.log('Forcing override...');
+                    try {
+                        delete window.startLiveScanner;
+                        Object.defineProperty(window, 'startLiveScanner', {
+                            value: nativeScanner,
+                            writable: false,
+                            configurable: false,
+                            enumerable: true
+                        });
+                        console.log('✓ startLiveScanner force-locked');
+                    } catch(e2) {
+                        // 마지막 수단: 그냥 덮어쓰기
+                        window.startLiveScanner = nativeScanner;
+                        console.log('✓ startLiveScanner overridden (not locked)');
+                    }
                 }
+                
+                console.log('========== Override Complete ==========');
             })();
         """.trimIndent()
 
-        webView.evaluateJavascript(script, null)
+        // 즉시 실행
+        webView.evaluateJavascript(script) { result ->
+            Log.d(TAG, "Override injection result: $result")
+        }
+        
+        // 1초 후 다시 실행 (jQuery ready 이후)
+        webView.postDelayed({
+            webView.evaluateJavascript(script) { result ->
+                Log.d(TAG, "Override re-injection (1s) result: $result")
+            }
+        }, 1000)
+        
+        // 2초 후 한 번 더 (확실하게!)
+        webView.postDelayed({
+            webView.evaluateJavascript(script) { result ->
+                Log.d(TAG, "Override re-injection (2s) result: $result")
+            }
+        }, 2000)
     }
 
     private fun forceInsertBarcode(barcode: String) {
-        Log.d(TAG, "========== Force inserting barcode: $barcode ==========")
+        Log.d(TAG, "Force inserting: $barcode")
 
         val safeBarcode = barcode
             .replace("\\", "\\\\")
             .replace("\"", "\\\"")
-            .replace("\n", "\\n")
 
         val script = """
             (function() {
                 try {
                     var barcode = "$safeBarcode";
-                    console.log('========== FORCE INSERT START ==========');
-                    console.log('Barcode:', barcode);
-                    console.log('Current URL:', window.location.href);
+                    console.log('Inserting barcode:', barcode);
                     
                     var input = document.getElementById('scan_bar');
-                    console.log('scan_bar found:', input !== null);
-                    
                     if (!input) {
-                        console.error('scan_bar NOT FOUND!');
-                        console.log('Available inputs:', 
-                            Array.from(document.querySelectorAll('input')).map(i => i.id || i.name).join(', '));
+                        console.error('scan_bar not found');
                         return 'NOT_FOUND';
                     }
                     
-                    // 강제 입력 시퀀스
-                    console.log('Step 1: Clear');
                     input.value = '';
+                    setTimeout(function() {
+                        input.value = barcode;
+                        input.focus();
+                        
+                        var event = new KeyboardEvent('keyup', {
+                            bubbles: true,
+                            cancelable: true,
+                            key: 'Enter',
+                            keyCode: 13
+                        });
+                        input.dispatchEvent(event);
+                        
+                        console.log('✓ Barcode inserted:', input.value);
+                    }, 100);
                     
-                    console.log('Step 2: Focus');
-                    input.focus();
-                    
-                    console.log('Step 3: Set value');
-                    input.value = barcode;
-                    
-                    console.log('Step 4: Trigger events');
-                    
-                    // input 이벤트
-                    var inputEvent = new Event('input', { bubbles: true, cancelable: true });
-                    input.dispatchEvent(inputEvent);
-                    
-                    // change 이벤트
-                    var changeEvent = new Event('change', { bubbles: true, cancelable: true });
-                    input.dispatchEvent(changeEvent);
-                    
-                    // keyup 이벤트 (웹페이지가 이걸로 감지)
-                    var keyupEvent = new KeyboardEvent('keyup', {
-                        bubbles: true,
-                        cancelable: true,
-                        key: 'Enter',
-                        code: 'Enter',
-                        keyCode: 13,
-                        which: 13
-                    });
-                    input.dispatchEvent(keyupEvent);
-                    
-                    console.log('Final value:', input.value);
-                    console.log('========== FORCE INSERT COMPLETE ==========');
-                    
-                    return 'SUCCESS:' + input.value;
-                    
+                    return 'OK';
                 } catch(e) {
                     console.error('Insert error:', e);
-                    return 'ERROR:' + e.message;
+                    return 'ERROR';
                 }
             })();
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
-            Log.d(TAG, "========== Insert result: $result ==========")
-            
-            // 결과 확인
-            if (result?.contains("SUCCESS") == true) {
-                Toast.makeText(this, "바코드 입력 완료", Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this, "입력 실패: $result", Toast.LENGTH_SHORT).show()
-            }
+            Log.d(TAG, "Insert result: $result")
         }
     }
 
     inner class ScannerBridge {
         @JavascriptInterface
         fun openScanner() {
-            Log.d(TAG, "========== Opening scanner ==========")
-            Log.d(TAG, "Current URL: ${webView.url}")
-            
+            Log.d(TAG, "========== openScanner called ==========")
             runOnUiThread {
                 if (hasCameraPermission()) {
-                    // 현재 URL 저장
-                    webView.url?.let { url ->
-                        if (url.contains("BarcodeIn", ignoreCase = true)) {
-                            lastPageUrl = url
-                            Log.d(TAG, "Saved URL before scanner: $lastPageUrl")
-                        }
-                    }
-                    
+                    Log.d(TAG, "Launching scanner activity...")
                     val intent = Intent(this@MainActivity, BarcodeScannerActivity::class.java)
                     scannerLauncher.launch(intent)
                 } else {
