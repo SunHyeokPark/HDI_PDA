@@ -18,7 +18,6 @@ import androidx.core.content.ContextCompat
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
-    private var pendingBarcode: String? = null
 
     companion object {
         private const val TAG = "HDI_PDA"
@@ -28,14 +27,19 @@ class MainActivity : AppCompatActivity() {
     private val scannerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        Log.d(TAG, "Scanner result: ${result.resultCode}")
+        Log.d(TAG, "========== Scanner returned ==========")
+        Log.d(TAG, "Result code: ${result.resultCode}")
         
         if (result.resultCode == Activity.RESULT_OK) {
             val barcode = result.data?.getStringExtra(BarcodeScannerActivity.RESULT_BARCODE)
+            Log.d(TAG, "Barcode received: $barcode")
+            
             if (!barcode.isNullOrEmpty()) {
-                Log.d(TAG, "Barcode: $barcode")
-                pendingBarcode = barcode
+                // 즉시 주입 시도 (여러 번!)
+                injectBarcodeMultipleTimes(barcode)
             }
+        } else {
+            Log.d(TAG, "Scanner cancelled or failed")
         }
     }
 
@@ -47,35 +51,9 @@ class MainActivity : AppCompatActivity() {
 
         if (hasCameraPermission()) {
             setupWebView()
-            
-            if (savedInstanceState != null) {
-                webView.restoreState(savedInstanceState)
-                pendingBarcode = savedInstanceState.getString("pendingBarcode")
-            } else {
-                webView.loadUrl(HOME_URL)
-            }
+            webView.loadUrl(HOME_URL)
         } else {
             requestCameraPermission()
-        }
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        webView.saveState(outState)
-        outState.putString("pendingBarcode", pendingBarcode)
-    }
-
-    override fun onResume() {
-        super.onResume()
-        Log.d(TAG, "onResume - pendingBarcode: $pendingBarcode")
-        
-        webView.onResume()
-        
-        pendingBarcode?.let { barcode ->
-            webView.postDelayed({
-                forceInsertBarcode(barcode)
-                pendingBarcode = null
-            }, 800)
         }
     }
 
@@ -85,158 +63,152 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
         }
 
-        // JavaScript 브릿지 추가
         webView.addJavascriptInterface(ScannerBridge(), "Scanner")
-        
-        // 디버깅 활성화
         WebView.setWebContentsDebuggingEnabled(true)
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 Log.d(TAG, "Page finished: $url")
-                
-                // 강력한 오버라이드 주입!
                 injectPowerfulOverride()
-                
-                // 대기 중인 바코드 처리
-                pendingBarcode?.let { barcode ->
-                    webView.postDelayed({
-                        forceInsertBarcode(barcode)
-                        pendingBarcode = null
-                    }, 500)
-                }
             }
         }
     }
 
-    /**
-     * 강력한 오버라이드!
-     * Object.defineProperty를 사용하여 덮어쓸 수 없게 만듦
-     */
     private fun injectPowerfulOverride() {
         val script = """
             (function() {
-                console.log('========== HDI PDA Override Injection ==========');
-                
-                // Scanner 객체 확인
-                if (typeof Scanner === 'undefined') {
-                    console.error('✗ Scanner object not found!');
-                    return;
-                }
-                
-                console.log('✓ Scanner object found');
-                
-                // 네이티브 스캐너 함수
-                var nativeScanner = function() {
-                    console.log('!!! NATIVE SCANNER CALLED !!!');
-                    try {
+                if (typeof Scanner !== 'undefined') {
+                    console.log('✓ Scanner bridge found');
+                    
+                    var nativeScanner = function() {
+                        console.log('!!! Native scanner called !!!');
                         Scanner.openScanner();
                         return false;
-                    } catch(e) {
-                        console.error('Native scanner error:', e);
-                        alert('스캐너 오류: ' + e.message);
-                        return false;
-                    }
-                };
-                
-                // startLiveScanner를 읽기 전용으로 덮어쓸 수 없게 만들기
-                try {
-                    Object.defineProperty(window, 'startLiveScanner', {
-                        value: nativeScanner,
-                        writable: false,      // 덮어쓸 수 없음!
-                        configurable: false,  // 재정의 불가!
-                        enumerable: true
-                    });
-                    console.log('✓ startLiveScanner locked with native scanner');
-                } catch(e) {
-                    // 이미 정의되어 있으면 강제로 교체
-                    console.log('Forcing override...');
+                    };
+                    
                     try {
-                        delete window.startLiveScanner;
                         Object.defineProperty(window, 'startLiveScanner', {
                             value: nativeScanner,
                             writable: false,
-                            configurable: false,
-                            enumerable: true
+                            configurable: false
                         });
-                        console.log('✓ startLiveScanner force-locked');
-                    } catch(e2) {
-                        // 마지막 수단: 그냥 덮어쓰기
+                        console.log('✓ startLiveScanner locked');
+                    } catch(e) {
                         window.startLiveScanner = nativeScanner;
-                        console.log('✓ startLiveScanner overridden (not locked)');
+                        console.log('✓ startLiveScanner overridden');
                     }
                 }
-                
-                console.log('========== Override Complete ==========');
             })();
         """.trimIndent()
 
-        // 즉시 실행
-        webView.evaluateJavascript(script) { result ->
-            Log.d(TAG, "Override injection result: $result")
-        }
+        webView.evaluateJavascript(script, null)
         
-        // 1초 후 다시 실행 (jQuery ready 이후)
+        // 1초 후 다시
         webView.postDelayed({
-            webView.evaluateJavascript(script) { result ->
-                Log.d(TAG, "Override re-injection (1s) result: $result")
-            }
+            webView.evaluateJavascript(script, null)
         }, 1000)
-        
-        // 2초 후 한 번 더 (확실하게!)
-        webView.postDelayed({
-            webView.evaluateJavascript(script) { result ->
-                Log.d(TAG, "Override re-injection (2s) result: $result")
-            }
-        }, 2000)
     }
 
-    private fun forceInsertBarcode(barcode: String) {
-        Log.d(TAG, "Force inserting: $barcode")
+    /**
+     * 바코드를 여러 번 시도해서 확실하게 입력!
+     */
+    private fun injectBarcodeMultipleTimes(barcode: String) {
+        Log.d(TAG, "🔥 Starting barcode injection: $barcode")
+        
+        // 1차 시도: 500ms 후
+        webView.postDelayed({
+            tryInjectBarcode(barcode, 1)
+        }, 500)
+        
+        // 2차 시도: 1000ms 후
+        webView.postDelayed({
+            tryInjectBarcode(barcode, 2)
+        }, 1000)
+        
+        // 3차 시도: 1500ms 후 (확실하게!)
+        webView.postDelayed({
+            tryInjectBarcode(barcode, 3)
+        }, 1500)
+    }
 
+    private fun tryInjectBarcode(barcode: String, attempt: Int) {
+        Log.d(TAG, "Injection attempt #$attempt")
+        
         val safeBarcode = barcode
             .replace("\\", "\\\\")
             .replace("\"", "\\\"")
+            .replace("\n", "\\n")
 
         val script = """
             (function() {
                 try {
+                    console.log('========== Injection Attempt #$attempt ==========');
                     var barcode = "$safeBarcode";
-                    console.log('Inserting barcode:', barcode);
                     
                     var input = document.getElementById('scan_bar');
                     if (!input) {
-                        console.error('scan_bar not found');
+                        console.error('scan_bar NOT FOUND!');
                         return 'NOT_FOUND';
                     }
                     
-                    input.value = '';
-                    setTimeout(function() {
-                        input.value = barcode;
-                        input.focus();
-                        
-                        var event = new KeyboardEvent('keyup', {
-                            bubbles: true,
-                            cancelable: true,
-                            key: 'Enter',
-                            keyCode: 13
-                        });
-                        input.dispatchEvent(event);
-                        
-                        console.log('✓ Barcode inserted:', input.value);
-                    }, 100);
+                    console.log('Found scan_bar, current value:', input.value);
                     
-                    return 'OK';
+                    // 비우기
+                    input.value = '';
+                    
+                    // 포커스
+                    input.focus();
+                    
+                    // 값 설정
+                    input.value = barcode;
+                    console.log('Set value:', input.value);
+                    
+                    // 이벤트 발생
+                    var events = ['input', 'change'];
+                    events.forEach(function(type) {
+                        var e = new Event(type, { bubbles: true, cancelable: true });
+                        input.dispatchEvent(e);
+                    });
+                    
+                    // keyup 이벤트 (엔터)
+                    var keyupEvent = new KeyboardEvent('keyup', {
+                        bubbles: true,
+                        cancelable: true,
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        which: 13
+                    });
+                    input.dispatchEvent(keyupEvent);
+                    
+                    console.log('✓ All events dispatched');
+                    console.log('Final value:', input.value);
+                    
+                    // doIpgoScan 직접 호출 시도
+                    if (typeof doIpgoScan === 'function') {
+                        console.log('Calling doIpgoScan directly...');
+                        setTimeout(function() {
+                            doIpgoScan(barcode);
+                        }, 100);
+                    }
+                    
+                    return 'SUCCESS';
+                    
                 } catch(e) {
-                    console.error('Insert error:', e);
-                    return 'ERROR';
+                    console.error('Injection error:', e);
+                    return 'ERROR:' + e.message;
                 }
             })();
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
-            Log.d(TAG, "Insert result: $result")
+            Log.d(TAG, "Attempt #$attempt result: $result")
+            
+            if (result?.contains("SUCCESS") == true) {
+                Log.d(TAG, "✓✓✓ Injection SUCCESS on attempt #$attempt ✓✓✓")
+                Toast.makeText(this, "바코드 입력 완료!", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -246,12 +218,11 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "========== openScanner called ==========")
             runOnUiThread {
                 if (hasCameraPermission()) {
-                    Log.d(TAG, "Launching scanner activity...")
+                    Log.d(TAG, "Launching scanner...")
                     val intent = Intent(this@MainActivity, BarcodeScannerActivity::class.java)
                     scannerLauncher.launch(intent)
                 } else {
                     Toast.makeText(this@MainActivity, "카메라 권한 필요", Toast.LENGTH_SHORT).show()
-                    requestCameraPermission()
                 }
             }
         }
