@@ -106,7 +106,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 현재 active element 또는 scan_bar에 바코드 삽입
+     * 현재 active element에 바코드 삽입 및 image-scanner 닫기
      */
     private fun insertBarcodeToActiveElement(barcode: String) {
         Log.d(TAG, "🔥 Inserting barcode: $barcode")
@@ -123,6 +123,8 @@ class MainActivity : AppCompatActivity() {
                 try {
                     console.log('========== BARCODE INSERTION ==========');
                     console.log('Barcode:', barcode);
+                    
+                    var inserted = false;
                     
                     // 1. 현재 active element 확인
                     var activeEl = document.activeElement;
@@ -157,49 +159,59 @@ class MainActivity : AppCompatActivity() {
                         activeEl.dispatchEvent(keyupEvent);
                         
                         console.log('✓ SUCCESS: Inserted to active element');
-                        return 'INSERTED_TO_ACTIVE';
+                        inserted = true;
                     }
                     
                     // 3. activeElement가 contenteditable인지 확인
-                    if (activeEl && activeEl.isContentEditable) {
+                    else if (activeEl && activeEl.isContentEditable) {
                         console.log('→ Inserting to contenteditable');
                         document.execCommand('insertText', false, barcode);
                         console.log('✓ SUCCESS: Inserted to contenteditable');
-                        return 'INSERTED_TO_CONTENTEDITABLE';
+                        inserted = true;
                     }
                     
-                    // 4. scan_bar 폴백
-                    var scanBar = document.getElementById('scan_bar');
-                    if (scanBar) {
-                        console.log('→ Fallback to scan_bar');
-                        
-                        scanBar.value = barcode;
-                        scanBar.focus();
-                        
-                        scanBar.dispatchEvent(new Event('input', {bubbles: true}));
-                        scanBar.dispatchEvent(new Event('change', {bubbles: true}));
-                        
-                        var keyupEvent = new KeyboardEvent('keyup', {
-                            bubbles: true,
-                            keyCode: 13,
-                            which: 13
-                        });
-                        scanBar.dispatchEvent(keyupEvent);
-                        
-                        console.log('✓ SUCCESS: Inserted to scan_bar');
-                        return 'INSERTED_TO_SCAN_BAR';
-                    }
-                    
-                    // 5. doIpgoScan 직접 호출 시도
-                    if (typeof doIpgoScan === 'function') {
+                    // 4. doIpgoScan 직접 호출 시도
+                    else if (typeof doIpgoScan === 'function') {
                         console.log('→ Calling doIpgoScan directly');
                         doIpgoScan(barcode);
                         console.log('✓ SUCCESS: Called doIpgoScan');
-                        return 'CALLED_DOIPGOSCAN';
+                        inserted = true;
                     }
                     
-                    console.error('✗ FAILED: No target found');
-                    return 'NO_TARGET_FOUND';
+                    // 5. image-scanner 닫기
+                    console.log('→ Closing image-scanner...');
+                    var imageScanner = document.getElementById('image-scanner');
+                    if (imageScanner) {
+                        // display none으로 숨기기
+                        imageScanner.style.display = 'none';
+                        console.log('✓ Closed image-scanner (display: none)');
+                    }
+                    
+                    // class="image-scanner"로 찾기
+                    var scannerByClass = document.querySelector('.image-scanner');
+                    if (scannerByClass) {
+                        scannerByClass.style.display = 'none';
+                        console.log('✓ Closed .image-scanner');
+                    }
+                    
+                    // 닫기 함수가 있으면 호출
+                    if (typeof closeImageScanner === 'function') {
+                        closeImageScanner();
+                        console.log('✓ Called closeImageScanner()');
+                    }
+                    
+                    // stopLiveScanner 함수가 있으면 호출
+                    if (typeof stopLiveScanner === 'function') {
+                        stopLiveScanner();
+                        console.log('✓ Called stopLiveScanner()');
+                    }
+                    
+                    if (inserted) {
+                        return 'SUCCESS';
+                    } else {
+                        console.warn('⚠ No target found for insertion');
+                        return 'NO_TARGET';
+                    }
                     
                 } catch(e) {
                     console.error('✗ ERROR:', e);
@@ -212,16 +224,10 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "Insertion result: $result")
             
             when {
-                result?.contains("INSERTED_TO_ACTIVE") == true -> {
+                result?.contains("SUCCESS") == true -> {
                     Toast.makeText(this, "✓ 입력 완료", Toast.LENGTH_SHORT).show()
                 }
-                result?.contains("INSERTED_TO_SCAN_BAR") == true -> {
-                    Toast.makeText(this, "✓ 입력 완료", Toast.LENGTH_SHORT).show()
-                }
-                result?.contains("CALLED_DOIPGOSCAN") == true -> {
-                    Toast.makeText(this, "✓ 처리 완료", Toast.LENGTH_SHORT).show()
-                }
-                result?.contains("NO_TARGET_FOUND") == true -> {
+                result?.contains("NO_TARGET") == true -> {
                     Toast.makeText(this, "⚠ 입력 대상을 찾을 수 없습니다", Toast.LENGTH_SHORT).show()
                 }
                 result?.contains("ERROR") == true -> {
