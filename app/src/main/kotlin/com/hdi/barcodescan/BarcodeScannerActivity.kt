@@ -3,6 +3,10 @@ package com.hdi.barcodescan
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import android.view.View
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.RelativeLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
@@ -14,20 +18,25 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 class BarcodeScannerActivity : AppCompatActivity() {
 
-    // ✅ 변수 선언 추가!
+    // UI 컴포넌트
+    private lateinit var cameraContainer: RelativeLayout
+    private lateinit var resultContainer: LinearLayout
     private lateinit var previewView: PreviewView
-    private lateinit var statusText: TextView
+    private lateinit var barcodeValueText: TextView
+    private lateinit var scanInstruction: TextView
     
+    // 카메라
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageAnalysis: ImageAnalysis? = null
     private var camera: Camera? = null
     private lateinit var cameraExecutor: ExecutorService
     
+    // 상태
     private var isScanning = true
+    private var scannedBarcode: String = ""
 
     companion object {
         private const val TAG = "BarcodeScanner"
@@ -38,56 +47,111 @@ class BarcodeScannerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_barcode_scanner)
 
-        previewView = findViewById(R.id.preview_view)
-        statusText = findViewById(R.id.status_text)
-
+        initViews()
+        setupButtons()
+        
         cameraExecutor = Executors.newSingleThreadExecutor()
         
-        startCamera()
+        startScanning()
     }
 
-    private fun startCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+    private fun initViews() {
+        cameraContainer = findViewById(R.id.camera_container)
+        resultContainer = findViewById(R.id.result_container)
+        previewView = findViewById(R.id.preview_view)
+        barcodeValueText = findViewById(R.id.barcode_value_text)
+        scanInstruction = findViewById(R.id.scan_instruction)
+    }
 
+    private fun setupButtons() {
+        // 스캔 중 취소
+        findViewById<Button>(R.id.cancel_scan_button).setOnClickListener {
+            Log.d(TAG, "Scan cancelled by user")
+            setResult(RESULT_CANCELED)
+            finish()
+        }
+        
+        // 값 사용
+        findViewById<Button>(R.id.use_button).setOnClickListener {
+            Log.d(TAG, "Use button clicked: $scannedBarcode")
+            val resultIntent = Intent()
+            resultIntent.putExtra(RESULT_BARCODE, scannedBarcode)
+            setResult(RESULT_OK, resultIntent)
+            finish()
+        }
+        
+        // 다시 스캔
+        findViewById<Button>(R.id.rescan_button).setOnClickListener {
+            Log.d(TAG, "Rescan button clicked")
+            startScanning()
+        }
+        
+        // 결과에서 취소
+        findViewById<Button>(R.id.cancel_result_button).setOnClickListener {
+            Log.d(TAG, "Result cancelled by user")
+            setResult(RESULT_CANCELED)
+            finish()
+        }
+    }
+
+    private fun startScanning() {
+        Log.d(TAG, "Starting scanning...")
+        
+        // UI 전환
+        cameraContainer.visibility = View.VISIBLE
+        resultContainer.visibility = View.GONE
+        
+        // 상태 초기화
+        isScanning = true
+        scannedBarcode = ""
+        scanInstruction.text = "코드를 가이드 안에 위치시키세요"
+        
+        // 카메라 시작
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        
         cameraProviderFuture.addListener({
             try {
                 cameraProvider = cameraProviderFuture.get()
-                bindCameraUseCases()
+                bindCamera()
             } catch (e: Exception) {
                 Log.e(TAG, "Camera initialization failed", e)
-                finishWithError("카메라 초기화 실패")
+                showError("카메라 초기화 실패: ${e.message}")
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
-    private fun bindCameraUseCases() {
-        val cameraProvider = cameraProvider ?: run {
+    private fun bindCamera() {
+        val cameraProvider = this.cameraProvider ?: run {
             Log.e(TAG, "Camera provider is null")
+            showError("카메라를 사용할 수 없습니다")
             return
         }
-
-        val preview = Preview.Builder()
-            .build()
-            .also {
-                it.setSurfaceProvider(previewView.surfaceProvider)
-            }
-
-        imageAnalysis = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
-            .also {
-                it.setAnalyzer(cameraExecutor, BarcodeAnalyzer { barcode ->
-                    onBarcodeDetected(barcode)
-                })
-            }
-
-        val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
         try {
             // 기존 바인딩 해제
             cameraProvider.unbindAll()
 
-            // 새로 바인딩
+            // Preview
+            val preview = Preview.Builder()
+                .build()
+                .also {
+                    it.setSurfaceProvider(previewView.surfaceProvider)
+                }
+
+            // ImageAnalysis
+            imageAnalysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                .also {
+                    it.setAnalyzer(cameraExecutor, BarcodeAnalyzer { barcode ->
+                        onBarcodeDetected(barcode)
+                    })
+                }
+
+            // Camera Selector
+            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+
+            // Bind to lifecycle
             camera = cameraProvider.bindToLifecycle(
                 this,
                 cameraSelector,
@@ -99,12 +163,14 @@ class BarcodeScannerActivity : AppCompatActivity() {
 
         } catch (e: Exception) {
             Log.e(TAG, "Camera binding failed", e)
-            finishWithError("카메라 바인딩 실패")
+            showError("카메라 시작 실패: ${e.message}")
         }
     }
 
     private fun onBarcodeDetected(barcode: String) {
         if (!isScanning) return
+        
+        Log.d(TAG, "Barcode detected: $barcode")
         
         // GUID 패턴 검증
         val guidPattern = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -116,39 +182,60 @@ class BarcodeScannerActivity : AppCompatActivity() {
             cleanBarcode = cleanBarcode.substring(1, cleanBarcode.length - 1)
         }
         
+        // GUID 검증
         if (guidPattern.matches(cleanBarcode)) {
             isScanning = false
+            scannedBarcode = cleanBarcode
             
-            runOnUiThread {
-                statusText.text = "✓ 스캔 성공!"
-                
-                // 진동
+            Log.d(TAG, "Valid barcode: $scannedBarcode")
+            
+            // 진동
+            try {
                 @Suppress("DEPRECATION")
-                (getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator)?.vibrate(200)
+                val vibrator = getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator
+                vibrator?.vibrate(200)
+            } catch (e: Exception) {
+                Log.e(TAG, "Vibration failed", e)
             }
             
-            Log.d(TAG, "Valid barcode detected: $cleanBarcode")
-            
-            // 결과 반환 및 즉시 종료
-            val resultIntent = Intent()
-            resultIntent.putExtra(RESULT_BARCODE, cleanBarcode)
-            setResult(RESULT_OK, resultIntent)
-            
-            // 즉시 종료!
-            finish()
+            // 결과 화면 표시
+            runOnUiThread {
+                showResult(scannedBarcode)
+            }
+        } else {
+            Log.d(TAG, "Invalid barcode format: $cleanBarcode")
         }
     }
 
-    private fun finishWithError(message: String) {
-        runOnUiThread {
-            statusText.text = "⚠ $message"
+    private fun showResult(barcode: String) {
+        Log.d(TAG, "Showing result: $barcode")
+        
+        // 카메라 일시 중지
+        try {
+            imageAnalysis?.clearAnalyzer()
+            cameraProvider?.unbindAll()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error pausing camera", e)
         }
-        finish()
+        
+        // UI 전환
+        cameraContainer.visibility = View.GONE
+        resultContainer.visibility = View.VISIBLE
+        
+        // 바코드 값 표시
+        barcodeValueText.text = barcode
+    }
+
+    private fun showError(message: String) {
+        Log.e(TAG, "Error: $message")
+        runOnUiThread {
+            scanInstruction.text = "⚠ $message"
+        }
     }
 
     override fun onPause() {
         super.onPause()
-        Log.d(TAG, "onPause - stopping scanner")
+        Log.d(TAG, "onPause")
         isScanning = false
     }
 
@@ -156,19 +243,15 @@ class BarcodeScannerActivity : AppCompatActivity() {
         super.onDestroy()
         Log.d(TAG, "onDestroy - releasing resources")
         
-        // 스캔 중지
         isScanning = false
         
         // 카메라 리소스 해제
         try {
             imageAnalysis?.clearAnalyzer()
             imageAnalysis = null
-            
             camera = null
-            
             cameraProvider?.unbindAll()
             cameraProvider = null
-            
             Log.d(TAG, "Camera resources released")
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing camera", e)
@@ -177,13 +260,9 @@ class BarcodeScannerActivity : AppCompatActivity() {
         // Executor 종료
         try {
             cameraExecutor.shutdown()
-            if (!cameraExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
-                cameraExecutor.shutdownNow()
-            }
-            Log.d(TAG, "Executor shutdown complete")
+            Log.d(TAG, "Executor shutdown")
         } catch (e: Exception) {
             Log.e(TAG, "Error shutting down executor", e)
-            cameraExecutor.shutdownNow()
         }
     }
 
@@ -196,6 +275,7 @@ class BarcodeScannerActivity : AppCompatActivity() {
         @androidx.camera.core.ExperimentalGetImage
         override fun analyze(imageProxy: ImageProxy) {
             val mediaImage = imageProxy.image
+            
             if (mediaImage != null && isScanning) {
                 val image = InputImage.fromMediaImage(
                     mediaImage,
@@ -215,8 +295,8 @@ class BarcodeScannerActivity : AppCompatActivity() {
                             }
                         }
                     }
-                    .addOnFailureListener {
-                        // 실패는 무시 (계속 스캔)
+                    .addOnFailureListener { e ->
+                        Log.e(TAG, "Barcode scanning failed", e)
                     }
                     .addOnCompleteListener {
                         imageProxy.close()
