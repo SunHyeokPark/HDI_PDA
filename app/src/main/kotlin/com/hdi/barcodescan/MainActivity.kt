@@ -35,11 +35,13 @@ class MainActivity : AppCompatActivity() {
             Log.d(TAG, "Barcode received: $barcode")
             
             if (!barcode.isNullOrEmpty()) {
-                // 즉시 주입 시도 (여러 번!)
-                injectBarcodeMultipleTimes(barcode)
+                // 짧은 대기 후 삽입
+                webView.postDelayed({
+                    insertBarcodeToActiveElement(barcode)
+                }, 300)
             }
         } else {
-            Log.d(TAG, "Scanner cancelled or failed")
+            Log.d(TAG, "Scanner cancelled")
         }
     }
 
@@ -63,151 +65,168 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
         }
 
+        // JavaScript Bridge
         webView.addJavascriptInterface(ScannerBridge(), "Scanner")
+        
+        // 디버깅 활성화
         WebView.setWebContentsDebuggingEnabled(true)
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 Log.d(TAG, "Page finished: $url")
-                injectPowerfulOverride()
+                
+                // 스캐너 버튼 연결
+                connectScannerButton()
             }
         }
     }
 
-    private fun injectPowerfulOverride() {
+    private fun connectScannerButton() {
         val script = """
             (function() {
                 if (typeof Scanner !== 'undefined') {
-                    console.log('✓ Scanner bridge found');
-                    
-                    var nativeScanner = function() {
-                        console.log('!!! Native scanner called !!!');
-                        Scanner.openScanner();
+                    // startLiveScanner 함수를 네이티브 스캐너로 교체
+                    window.startLiveScanner = function() {
+                        console.log('🔥 Opening native scanner...');
+                        try {
+                            Scanner.openScanner();
+                        } catch(e) {
+                            console.error('Scanner error:', e);
+                            alert('스캐너 오류: ' + e.message);
+                        }
                         return false;
                     };
-                    
-                    try {
-                        Object.defineProperty(window, 'startLiveScanner', {
-                            value: nativeScanner,
-                            writable: false,
-                            configurable: false
-                        });
-                        console.log('✓ startLiveScanner locked');
-                    } catch(e) {
-                        window.startLiveScanner = nativeScanner;
-                        console.log('✓ startLiveScanner overridden');
-                    }
+                    console.log('✓ Native scanner connected');
                 }
             })();
         """.trimIndent()
 
         webView.evaluateJavascript(script, null)
-        
-        // 1초 후 다시
-        webView.postDelayed({
-            webView.evaluateJavascript(script, null)
-        }, 1000)
     }
 
     /**
-     * 바코드를 여러 번 시도해서 확실하게 입력!
+     * 현재 active element 또는 scan_bar에 바코드 삽입
      */
-    private fun injectBarcodeMultipleTimes(barcode: String) {
-        Log.d(TAG, "🔥 Starting barcode injection: $barcode")
+    private fun insertBarcodeToActiveElement(barcode: String) {
+        Log.d(TAG, "🔥 Inserting barcode: $barcode")
         
-        // 1차 시도: 500ms 후
-        webView.postDelayed({
-            tryInjectBarcode(barcode, 1)
-        }, 500)
-        
-        // 2차 시도: 1000ms 후
-        webView.postDelayed({
-            tryInjectBarcode(barcode, 2)
-        }, 1000)
-        
-        // 3차 시도: 1500ms 후 (확실하게!)
-        webView.postDelayed({
-            tryInjectBarcode(barcode, 3)
-        }, 1500)
-    }
-
-    private fun tryInjectBarcode(barcode: String, attempt: Int) {
-        Log.d(TAG, "Injection attempt #$attempt")
-        
+        // 안전한 문자열 이스케이프
         val safeBarcode = barcode
             .replace("\\", "\\\\")
             .replace("\"", "\\\"")
             .replace("\n", "\\n")
+            .replace("\r", "\\r")
 
         val script = """
-            (function() {
+            (function(barcode) {
                 try {
-                    console.log('========== Injection Attempt #$attempt ==========');
-                    var barcode = "$safeBarcode";
+                    console.log('========== BARCODE INSERTION ==========');
+                    console.log('Barcode:', barcode);
                     
-                    var input = document.getElementById('scan_bar');
-                    if (!input) {
-                        console.error('scan_bar NOT FOUND!');
-                        return 'NOT_FOUND';
+                    // 1. 현재 active element 확인
+                    var activeEl = document.activeElement;
+                    console.log('Active element:', activeEl ? activeEl.tagName : 'none');
+                    
+                    // 2. activeElement가 input/textarea인지 확인
+                    if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+                        console.log('→ Inserting to active input/textarea');
+                        
+                        // 커서 위치 확인
+                        var start = activeEl.selectionStart || 0;
+                        var end = activeEl.selectionEnd || 0;
+                        var value = activeEl.value || '';
+                        
+                        // 커서 위치에 삽입
+                        activeEl.value = value.substring(0, start) + barcode + value.substring(end);
+                        
+                        // 커서 위치 조정
+                        var newPos = start + barcode.length;
+                        activeEl.selectionStart = newPos;
+                        activeEl.selectionEnd = newPos;
+                        
+                        // 이벤트 발생
+                        activeEl.dispatchEvent(new Event('input', {bubbles: true}));
+                        activeEl.dispatchEvent(new Event('change', {bubbles: true}));
+                        
+                        var keyupEvent = new KeyboardEvent('keyup', {
+                            bubbles: true,
+                            keyCode: 13,
+                            which: 13
+                        });
+                        activeEl.dispatchEvent(keyupEvent);
+                        
+                        console.log('✓ SUCCESS: Inserted to active element');
+                        return 'INSERTED_TO_ACTIVE';
                     }
                     
-                    console.log('Found scan_bar, current value:', input.value);
+                    // 3. activeElement가 contenteditable인지 확인
+                    if (activeEl && activeEl.isContentEditable) {
+                        console.log('→ Inserting to contenteditable');
+                        document.execCommand('insertText', false, barcode);
+                        console.log('✓ SUCCESS: Inserted to contenteditable');
+                        return 'INSERTED_TO_CONTENTEDITABLE';
+                    }
                     
-                    // 비우기
-                    input.value = '';
+                    // 4. scan_bar 폴백
+                    var scanBar = document.getElementById('scan_bar');
+                    if (scanBar) {
+                        console.log('→ Fallback to scan_bar');
+                        
+                        scanBar.value = barcode;
+                        scanBar.focus();
+                        
+                        scanBar.dispatchEvent(new Event('input', {bubbles: true}));
+                        scanBar.dispatchEvent(new Event('change', {bubbles: true}));
+                        
+                        var keyupEvent = new KeyboardEvent('keyup', {
+                            bubbles: true,
+                            keyCode: 13,
+                            which: 13
+                        });
+                        scanBar.dispatchEvent(keyupEvent);
+                        
+                        console.log('✓ SUCCESS: Inserted to scan_bar');
+                        return 'INSERTED_TO_SCAN_BAR';
+                    }
                     
-                    // 포커스
-                    input.focus();
-                    
-                    // 값 설정
-                    input.value = barcode;
-                    console.log('Set value:', input.value);
-                    
-                    // 이벤트 발생
-                    var events = ['input', 'change'];
-                    events.forEach(function(type) {
-                        var e = new Event(type, { bubbles: true, cancelable: true });
-                        input.dispatchEvent(e);
-                    });
-                    
-                    // keyup 이벤트 (엔터)
-                    var keyupEvent = new KeyboardEvent('keyup', {
-                        bubbles: true,
-                        cancelable: true,
-                        key: 'Enter',
-                        code: 'Enter',
-                        keyCode: 13,
-                        which: 13
-                    });
-                    input.dispatchEvent(keyupEvent);
-                    
-                    console.log('✓ All events dispatched');
-                    console.log('Final value:', input.value);
-                    
-                    // doIpgoScan 직접 호출 시도
+                    // 5. doIpgoScan 직접 호출 시도
                     if (typeof doIpgoScan === 'function') {
-                        console.log('Calling doIpgoScan directly...');
-                        setTimeout(function() {
-                            doIpgoScan(barcode);
-                        }, 100);
+                        console.log('→ Calling doIpgoScan directly');
+                        doIpgoScan(barcode);
+                        console.log('✓ SUCCESS: Called doIpgoScan');
+                        return 'CALLED_DOIPGOSCAN';
                     }
                     
-                    return 'SUCCESS';
+                    console.error('✗ FAILED: No target found');
+                    return 'NO_TARGET_FOUND';
                     
                 } catch(e) {
-                    console.error('Injection error:', e);
+                    console.error('✗ ERROR:', e);
                     return 'ERROR:' + e.message;
                 }
-            })();
+            })("$safeBarcode");
         """.trimIndent()
 
         webView.evaluateJavascript(script) { result ->
-            Log.d(TAG, "Attempt #$attempt result: $result")
+            Log.d(TAG, "Insertion result: $result")
             
-            if (result?.contains("SUCCESS") == true) {
-                Log.d(TAG, "✓✓✓ Injection SUCCESS on attempt #$attempt ✓✓✓")
-                Toast.makeText(this, "바코드 입력 완료!", Toast.LENGTH_SHORT).show()
+            when {
+                result?.contains("INSERTED_TO_ACTIVE") == true -> {
+                    Toast.makeText(this, "✓ 입력 완료", Toast.LENGTH_SHORT).show()
+                }
+                result?.contains("INSERTED_TO_SCAN_BAR") == true -> {
+                    Toast.makeText(this, "✓ 입력 완료", Toast.LENGTH_SHORT).show()
+                }
+                result?.contains("CALLED_DOIPGOSCAN") == true -> {
+                    Toast.makeText(this, "✓ 처리 완료", Toast.LENGTH_SHORT).show()
+                }
+                result?.contains("NO_TARGET_FOUND") == true -> {
+                    Toast.makeText(this, "⚠ 입력 대상을 찾을 수 없습니다", Toast.LENGTH_SHORT).show()
+                }
+                result?.contains("ERROR") == true -> {
+                    Toast.makeText(this, "⚠ 입력 오류", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -215,14 +234,19 @@ class MainActivity : AppCompatActivity() {
     inner class ScannerBridge {
         @JavascriptInterface
         fun openScanner() {
-            Log.d(TAG, "========== openScanner called ==========")
+            Log.d(TAG, "📷 openScanner called from JavaScript")
             runOnUiThread {
                 if (hasCameraPermission()) {
-                    Log.d(TAG, "Launching scanner...")
+                    Log.d(TAG, "Launching scanner activity...")
                     val intent = Intent(this@MainActivity, BarcodeScannerActivity::class.java)
                     scannerLauncher.launch(intent)
                 } else {
-                    Toast.makeText(this@MainActivity, "카메라 권한 필요", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "카메라 권한이 필요합니다",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    requestCameraPermission()
                 }
             }
         }
@@ -250,12 +274,20 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
-        if (requestCode == 100 &&
-            grantResults.isNotEmpty() &&
-            grantResults[0] == PackageManager.PERMISSION_GRANTED
-        ) {
-            setupWebView()
-            webView.loadUrl(HOME_URL)
+        if (requestCode == 100) {
+            if (grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            ) {
+                Toast.makeText(this, "권한이 허용되었습니다", Toast.LENGTH_SHORT).show()
+                setupWebView()
+                webView.loadUrl(HOME_URL)
+            } else {
+                Toast.makeText(
+                    this,
+                    "카메라 권한이 필요합니다",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
