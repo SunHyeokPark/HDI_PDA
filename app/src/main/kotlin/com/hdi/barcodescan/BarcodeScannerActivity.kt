@@ -1,143 +1,237 @@
 package com.hdi.barcodescan
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
-import android.util.Size
-import android.view.View
-import android.widget.Button
-import android.widget.TextView
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.camera.core.*
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.common.InputImage
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 
-class BarcodeScannerActivity : AppCompatActivity() {
-    
-    private lateinit var previewView: PreviewView
-    private lateinit var statusText: TextView
-    private lateinit var closeButton: Button
-    private lateinit var cameraExecutor: ExecutorService
-    private var imageAnalysis: ImageAnalysis? = null
-    private var isScanning = true
-    
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var webView: WebView
+
     companion object {
-        private const val TAG = "BarcodeScanner"
-        private const val CAMERA_PERMISSION_CODE = 100
-        const val RESULT_BARCODE = "barcode_result"
+        private const val TAG = "HDI_PDA"
+        private const val HOME_URL = "http://erp.hdi21.co.kr/mobile"
+    }
+
+    private val scannerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        Log.d(TAG, "========== Scanner returned ==========")
+        Log.d(TAG, "Result code: ${result.resultCode}")
+        
+        if (result.resultCode == Activity.RESULT_OK) {
+            val barcode = result.data?.getStringExtra(BarcodeScannerActivity.RESULT_BARCODE)
+            Log.d(TAG, "Barcode received: $barcode")
+            
+            if (!barcode.isNullOrEmpty()) {
+                // 즉시 주입 시도 (여러 번!)
+                injectBarcodeMultipleTimes(barcode)
+            }
+        } else {
+            Log.d(TAG, "Scanner cancelled or failed")
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_barcode_scanner)
-        
-        previewView = findViewById(R.id.preview_view)
-        statusText = findViewById(R.id.status_text)
-        closeButton = findViewById(R.id.close_button)
-        
-        closeButton.setOnClickListener {
-            finish()
-        }
-        
-        cameraExecutor = Executors.newSingleThreadExecutor()
-        
+        setContentView(R.layout.activity_main)
+
+        webView = findViewById(R.id.webview)
+
         if (hasCameraPermission()) {
-            startCamera()
+            setupWebView()
+            webView.loadUrl(HOME_URL)
         } else {
             requestCameraPermission()
         }
     }
 
-    private fun startCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-        
-        cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-            
-            // Preview
-            val preview = Preview.Builder()
-                .build()
-                .also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
-            
-            // Image analysis
-            imageAnalysis = ImageAnalysis.Builder()
-                .setTargetResolution(Size(1280, 720))
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .build()
-                .also {
-                    it.setAnalyzer(cameraExecutor, BarcodeAnalyzer { barcode ->
-                        onBarcodeDetected(barcode)
-                    })
-                }
-            
-            // Select back camera
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-            
-            try {
-                cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
-                    this, cameraSelector, preview, imageAnalysis
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Camera binding failed", e)
-                Toast.makeText(this, "카메라 시작 실패", Toast.LENGTH_SHORT).show()
+    private fun setupWebView() {
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+        }
+
+        webView.addJavascriptInterface(ScannerBridge(), "Scanner")
+        WebView.setWebContentsDebuggingEnabled(true)
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                Log.d(TAG, "Page finished: $url")
+                injectPowerfulOverride()
             }
-            
-        }, ContextCompat.getMainExecutor(this))
+        }
     }
 
-    private fun onBarcodeDetected(barcode: String) {
-        if (!isScanning) return
+    private fun injectPowerfulOverride() {
+        val script = """
+            (function() {
+                if (typeof Scanner !== 'undefined') {
+                    console.log('✓ Scanner bridge found');
+                    
+                    var nativeScanner = function() {
+                        console.log('!!! Native scanner called !!!');
+                        Scanner.openScanner();
+                        return false;
+                    };
+                    
+                    try {
+                        Object.defineProperty(window, 'startLiveScanner', {
+                            value: nativeScanner,
+                            writable: false,
+                            configurable: false
+                        });
+                        console.log('✓ startLiveScanner locked');
+                    } catch(e) {
+                        window.startLiveScanner = nativeScanner;
+                        console.log('✓ startLiveScanner overridden');
+                    }
+                }
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(script, null)
         
-        // GUID 패턴 검증
-        val guidPattern = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+        // 1초 후 다시
+        webView.postDelayed({
+            webView.evaluateJavascript(script, null)
+        }, 1000)
+    }
+
+    /**
+     * 바코드를 여러 번 시도해서 확실하게 입력!
+     */
+    private fun injectBarcodeMultipleTimes(barcode: String) {
+        Log.d(TAG, "🔥 Starting barcode injection: $barcode")
         
-        var cleanBarcode = barcode.trim()
+        // 1차 시도: 500ms 후
+        webView.postDelayed({
+            tryInjectBarcode(barcode, 1)
+        }, 500)
         
-        // 중괄호 제거
-        if (cleanBarcode.startsWith("{") && cleanBarcode.endsWith("}")) {
-            cleanBarcode = cleanBarcode.substring(1, cleanBarcode.length - 1)
-        }
+        // 2차 시도: 1000ms 후
+        webView.postDelayed({
+            tryInjectBarcode(barcode, 2)
+        }, 1000)
         
-        if (guidPattern.matches(cleanBarcode)) {
-            isScanning = false
+        // 3차 시도: 1500ms 후 (확실하게!)
+        webView.postDelayed({
+            tryInjectBarcode(barcode, 3)
+        }, 1500)
+    }
+
+    private fun tryInjectBarcode(barcode: String, attempt: Int) {
+        Log.d(TAG, "Injection attempt #$attempt")
+        
+        val safeBarcode = barcode
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+
+        val script = """
+            (function() {
+                try {
+                    console.log('========== Injection Attempt #$attempt ==========');
+                    var barcode = "$safeBarcode";
+                    
+                    var input = document.getElementById('scan_bar');
+                    if (!input) {
+                        console.error('scan_bar NOT FOUND!');
+                        return 'NOT_FOUND';
+                    }
+                    
+                    console.log('Found scan_bar, current value:', input.value);
+                    
+                    // 비우기
+                    input.value = '';
+                    
+                    // 포커스
+                    input.focus();
+                    
+                    // 값 설정
+                    input.value = barcode;
+                    console.log('Set value:', input.value);
+                    
+                    // 이벤트 발생
+                    var events = ['input', 'change'];
+                    events.forEach(function(type) {
+                        var e = new Event(type, { bubbles: true, cancelable: true });
+                        input.dispatchEvent(e);
+                    });
+                    
+                    // keyup 이벤트 (엔터)
+                    var keyupEvent = new KeyboardEvent('keyup', {
+                        bubbles: true,
+                        cancelable: true,
+                        key: 'Enter',
+                        code: 'Enter',
+                        keyCode: 13,
+                        which: 13
+                    });
+                    input.dispatchEvent(keyupEvent);
+                    
+                    console.log('✓ All events dispatched');
+                    console.log('Final value:', input.value);
+                    
+                    // doIpgoScan 직접 호출 시도
+                    if (typeof doIpgoScan === 'function') {
+                        console.log('Calling doIpgoScan directly...');
+                        setTimeout(function() {
+                            doIpgoScan(barcode);
+                        }, 100);
+                    }
+                    
+                    return 'SUCCESS';
+                    
+                } catch(e) {
+                    console.error('Injection error:', e);
+                    return 'ERROR:' + e.message;
+                }
+            })();
+        """.trimIndent()
+
+        webView.evaluateJavascript(script) { result ->
+            Log.d(TAG, "Attempt #$attempt result: $result")
             
-            runOnUiThread {
-                statusText.text = "✓ 스캔 성공!"
-                statusText.setBackgroundColor(ContextCompat.getColor(this, android.R.color.holo_green_dark))
-                
-                // 진동
-                @Suppress("DEPRECATION")
-                (getSystemService(VIBRATOR_SERVICE) as? android.os.Vibrator)?.vibrate(200)
+            if (result?.contains("SUCCESS") == true) {
+                Log.d(TAG, "✓✓✓ Injection SUCCESS on attempt #$attempt ✓✓✓")
+                Toast.makeText(this, "바코드 입력 완료!", Toast.LENGTH_SHORT).show()
             }
-            
-            Log.d(TAG, "Barcode detected: $cleanBarcode")
-            
-            // 결과 반환
-            val resultIntent = Intent()
-            resultIntent.putExtra(RESULT_BARCODE, cleanBarcode)
-            setResult(RESULT_OK, resultIntent)
-            
-            // 즉시 종료 (깔끔하게!)
-            finish()
+        }
+    }
+
+    inner class ScannerBridge {
+        @JavascriptInterface
+        fun openScanner() {
+            Log.d(TAG, "========== openScanner called ==========")
+            runOnUiThread {
+                if (hasCameraPermission()) {
+                    Log.d(TAG, "Launching scanner...")
+                    val intent = Intent(this@MainActivity, BarcodeScannerActivity::class.java)
+                    scannerLauncher.launch(intent)
+                } else {
+                    Toast.makeText(this@MainActivity, "카메라 권한 필요", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
     private fun hasCameraPermission(): Boolean {
         return ContextCompat.checkSelfPermission(
-            this, Manifest.permission.CAMERA
+            this,
+            Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
     }
 
@@ -145,7 +239,7 @@ class BarcodeScannerActivity : AppCompatActivity() {
         ActivityCompat.requestPermissions(
             this,
             arrayOf(Manifest.permission.CAMERA),
-            CAMERA_PERMISSION_CODE
+            100
         )
     }
 
@@ -155,63 +249,26 @@ class BarcodeScannerActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        
-        if (requestCode == CAMERA_PERMISSION_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startCamera()
-            } else {
-                Toast.makeText(this, "카메라 권한이 필요합니다", Toast.LENGTH_SHORT).show()
-                finish()
-            }
+
+        if (requestCode == 100 &&
+            grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        ) {
+            setupWebView()
+            webView.loadUrl(HOME_URL)
+        }
+    }
+
+    override fun onBackPressed() {
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            super.onBackPressed()
         }
     }
 
     override fun onDestroy() {
+        webView.destroy()
         super.onDestroy()
-        Log.d(TAG, "Scanner Activity destroyed")
-        
-        // 카메라 완전 해제
-        isScanning = false
-        cameraExecutor.shutdown()
-        
-        try {
-            cameraExecutor.awaitTermination(1, java.util.concurrent.TimeUnit.SECONDS)
-        } catch (e: InterruptedException) {
-            Log.e(TAG, "Camera executor shutdown interrupted", e)
-        }
-    }
-
-    // ML Kit 바코드 분석기
-    private class BarcodeAnalyzer(
-        private val onBarcodeDetected: (String) -> Unit
-    ) : ImageAnalysis.Analyzer {
-        
-        private val scanner = BarcodeScanning.getClient()
-        
-        @androidx.camera.core.ExperimentalGetImage
-        override fun analyze(imageProxy: ImageProxy) {
-            val mediaImage = imageProxy.image
-            if (mediaImage != null) {
-                val image = InputImage.fromMediaImage(
-                    mediaImage,
-                    imageProxy.imageInfo.rotationDegrees
-                )
-                
-                scanner.process(image)
-                    .addOnSuccessListener { barcodes ->
-                        for (barcode in barcodes) {
-                            barcode.rawValue?.let { value ->
-                                Log.d(TAG, "Barcode detected: $value")
-                                onBarcodeDetected(value)
-                            }
-                        }
-                    }
-                    .addOnCompleteListener {
-                        imageProxy.close()
-                    }
-            } else {
-                imageProxy.close()
-            }
-        }
     }
 }
