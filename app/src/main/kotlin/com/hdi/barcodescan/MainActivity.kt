@@ -178,32 +178,37 @@ class MainActivity : AppCompatActivity() {
                         inserted = true;
                     }
                     
-                    // 5. image-scanner 닫기
+                    // 5. image-scanner 닫기 (웹 페이지의 함수 사용)
                     console.log('→ Closing image-scanner...');
-                    var imageScanner = document.getElementById('image-scanner');
-                    if (imageScanner) {
-                        // display none으로 숨기기
-                        imageScanner.style.display = 'none';
-                        console.log('✓ Closed image-scanner (display: none)');
+                    
+                    // 5-1. stopLiveScanner 함수 호출
+                    if (typeof stopLiveScanner === 'function') {
+                        stopLiveScanner();
+                        console.log('✓ Called stopLiveScanner()');
                     }
                     
-                    // class="image-scanner"로 찾기
-                    var scannerByClass = document.querySelector('.image-scanner');
-                    if (scannerByClass) {
-                        scannerByClass.style.display = 'none';
-                        console.log('✓ Closed .image-scanner');
-                    }
-                    
-                    // 닫기 함수가 있으면 호출
+                    // 5-2. closeImageScanner 함수 호출
                     if (typeof closeImageScanner === 'function') {
                         closeImageScanner();
                         console.log('✓ Called closeImageScanner()');
                     }
                     
-                    // stopLiveScanner 함수가 있으면 호출
-                    if (typeof stopLiveScanner === 'function') {
-                        stopLiveScanner();
-                        console.log('✓ Called stopLiveScanner()');
+                    // 5-3. ESC 키 이벤트 발생 (대부분의 모달이 ESC로 닫힘)
+                    var escEvent = new KeyboardEvent('keydown', {
+                        key: 'Escape',
+                        keyCode: 27,
+                        which: 27,
+                        bubbles: true,
+                        cancelable: true
+                    });
+                    document.dispatchEvent(escEvent);
+                    console.log('✓ Dispatched ESC key event');
+                    
+                    // 5-4. 닫기 버튼 클릭 시뮬레이션
+                    var closeButton = document.querySelector('#image-scanner .close-btn, #image-scanner .btn-close, .image-scanner .close-btn, .image-scanner .btn-close');
+                    if (closeButton) {
+                        closeButton.click();
+                        console.log('✓ Clicked close button');
                     }
                     
                     if (inserted) {
