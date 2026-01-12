@@ -18,6 +18,7 @@ import java.util.concurrent.TimeUnit
 
 class BarcodeScannerActivity : AppCompatActivity() {
 
+    // ✅ 변수 선언 추가!
     private lateinit var previewView: PreviewView
     private lateinit var statusText: TextView
     
@@ -37,8 +38,8 @@ class BarcodeScannerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_barcode_scanner)
 
-        previewView = findViewById(R.id.previewView)
-        statusText = findViewById(R.id.statusText)
+        previewView = findViewById(R.id.preview_view)
+        statusText = findViewById(R.id.status_text)
 
         cameraExecutor = Executors.newSingleThreadExecutor()
         
